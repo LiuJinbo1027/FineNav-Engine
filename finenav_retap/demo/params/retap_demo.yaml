@@ -1,0 +1,115 @@
+# ==============================================================================
+#  retap_demo — S4 parameter file
+# ==============================================================================
+#  Usage:
+#    ros2 run finenav_retap retap_demo --ros-args \
+#      --params-file src/FineNav-Engine/finenav_retap/demo/params/retap_demo.yaml
+#
+#  Node naming: every private node is created as <engine_node_name>/<name>:
+#      /retap_demo/retap_terrain_map   MapServer
+#      /retap_demo/retap_layer         ControlLayer (planner + world view)
+#      /retap_demo/finenav_navigator   BtNavigator
+#      /retap_demo/finenav_localizer   FineNavLocalizer
+#  generate_parameter_library declares every field under the registration name
+#  (retap_terrain_map / retap_astar_planner / retap_world_view), hence the extra
+#  nesting level below.
+# ==============================================================================
+
+# ── static terrain map ──────────────────────────────────────────────────────
+/retap_demo/retap_terrain_map:
+  ros__parameters:
+    use_sim_time: false
+    # 2 Hz: high enough for the fusion loop, low enough that the "robot state
+    # unavailable" warning (no localizer in the S3 demo) stays quiet.
+    # S5's online mapping wants 10 Hz.
+    update_rate_hz: 2.0
+
+    retap_terrain_map:
+      # ── static prior ─────────────────────────────────────────────────────
+      # Produced by S1:
+      #   ros2 run finenav_retap retap_map_tool analyze \
+      #     --pcd .../desert.pcd --resolution 0.2 \
+      #     --config .../retap_ros2/config/terrain_sim.yaml \
+      #     --output-dir /tmp/retap_desert
+      map_format: bt
+      map_path: /tmp/retap_desert/desert_terrain.bt
+      resolution: 0.2
+
+      # ── terrain analysis: slugcat calibration, same as terrain_sim.yaml ──
+      slope_threshold: 0.65
+      roughness_threshold: 0.50
+      sparsity_threshold: 0.70
+      traversability_threshold: 0.805
+      slope_weight: 0.5
+      roughness_weight: 0.3
+      sparsity_weight: 0.2
+      traversability_weight: 2.3
+      points_number_threshold: 20
+      collision_neighbor: 17
+      frame_height: 0.5
+      filling_radius: 0.5
+
+      # ── diagnostics (/retap/map/{traversability,collision,drivable}) ─────
+      publish_diagnostics: true
+      downsample_diagnostics: 1
+      diagnostics_period_sec: 1.0
+
+      # ── online incremental mapping (S5) ──────────────────────────────────
+      online_mapping: false
+      scan_topic: /cloud_registered
+      scan_in_map_frame: true
+      update_free: 0
+      max_range: 10.0
+      max_buffer_size: 2
+      max_scans_per_cycle: 4
+      terrain_update_batch: 3
+      terrain_update_period_sec: 0.5
+
+# ── planner + world view (one ControlLayer) ─────────────────────────────────
+/retap_demo/retap_layer:
+  ros__parameters:
+    use_sim_time: false
+    retap_astar_planner:
+      # ReTAP Astar constructor order: (h_w, t_w, g_w).
+      heuristic_weight: 0.5
+      traversability_weight: 0.5
+      distance_weight: 1.0
+      # Hard budgets: the search runs inside the map read lock.
+      max_expansions: 500000
+      time_budget_ms: 500.0
+      goal_z_tolerance_voxels: 2
+      stop_distance: 0.2
+      snap_radius: 1.0
+      verbose: false          # true = ReTAP's per-node stdout
+      publish_path: true      # /retap/path
+    retap_world_view:
+      # Must stay larger than the planner's snap_radius (1.0 m): the search
+      # box is built from the raw start/goal, so the snapped voxels have to
+      # fall inside it.
+      search_margin: 3.0
+      publish_markers: true   # /retap/goal
+
+# ── navigator (behaviour tree) ──────────────────────────────────────────────
+/retap_demo/finenav_navigator:
+  ros__parameters:
+    use_sim_time: false
+    behavior_trees:
+      - "finenav_retap/demo/behavior_trees"   # RetapNavigate
+
+# ── localizer ──────────────────────────────────────────────────────────────
+# Phase 1 does not run a simulator: feed an absolute pose on /fake_pose, e.g.
+#   ros2 topic pub -r 10 /fake_pose geometry_msgs/msg/PoseWithCovarianceStamped \
+#     "{header: {frame_id: map}, pose: {pose: {position: {z: 0.3}, orientation: {w: 1.0}}}}"
+# force_2d_mode stays false so the z of the terrain surface survives.
+/retap_demo/finenav_localizer:
+  ros__parameters:
+    use_sim_time: false
+    pose_topic: "/fake_pose"
+    pose_smoothing_time: 0.0
+    initial_pose_topic: ""
+    twist_topic: ""
+    odom_topic: ""
+    odom_use_twist: false
+    force_2d_mode: false
+    publish_tf: false
+    publish_odom: false

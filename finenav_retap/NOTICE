@@ -1,0 +1,17 @@
+finenav_retap
+Copyright 2026 The FineNav-Engine contributors
+
+This package contains code derived from ReTAP-Planner (HITSZ-NRSL),
+Copyright HITSZ-NRSL, licensed under the Apache License, Version 2.0.
+ReTAP is described in:
+
+  Yuxiang Li, Kun Chen, Yifei Wang, Weifan Zhang, Jiancheng Wang,
+  Haoyao Chen, Yunhui Liu, "Real-Time Multi-Level Terrain-Aware Path
+  Planning for Ground Mobile Robots in Large-Scale Rough Terrains",
+  IEEE Transactions on Robotics, 2025.
+
+Ported files keep their original Apache-2.0 headers and are marked
+"Ported from ReTAP-Planner" where they begin.  Files added by this port
+(TerrainConfig, TerrainGrid, TerrainModel, map_io, and the ROS 2 /
+FineNav plugin layers) are original to this package and carry the same
+license.

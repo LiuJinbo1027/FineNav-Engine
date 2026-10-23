@@ -1,0 +1,35 @@
+# Terrain parameters for the FineNav simulator maps
+# (finenav_simulator/resource/maps/{desert,hill,vocano}.pcd).
+#
+# Starting point: ReTAP's "slugcat" configuration, not the mr1000 one
+# (slope_threshold: 3 == 172 deg there, which disables the slope check) and not
+# the upstream header defaults (sparsity_threshold: 0.2 is tuned for dense
+# lidar frames and rejects a 100k-point aerial PCD).
+#
+# Key names are identical to retap_core::TerrainConfig and to the FineNav
+# plugin's generated parameter file, so a calibration done with
+# `retap_map_tool analyze` transfers verbatim.
+
+retap_terrain:
+  resolution: 0.2
+
+  # hard constraints (a voxel above any of these is a collision)
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  # traversability = w_T * (w_s * slope + w_r * roughness + w_p * sparsity)
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  # NDT / neighbour analysis
+  points_number_threshold: 20
+  collision_neighbor: 17
+  frame_height: 0.5
+  filling_radius: 0.5
+
+  # static PCD: no ray-carved free space; online lidar: 2
+  update_free: 0

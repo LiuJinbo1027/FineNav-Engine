@@ -1,0 +1,169 @@
+# RetapTerrainMap parameter definition.
+#
+# The top-level key must equal the name passed to FINENAV_REGISTER_MAP and the
+# MapServer's algo_name ("retap_terrain_map").  It is also the parameter prefix
+# generate_parameter_library declares under, so YAML nests one level deeper:
+#
+#   <engine_node>/<server_name>:
+#     ros__parameters:
+#       retap_terrain_map:          <- prefix
+#         map_path: ...
+#
+# Terrain thresholds/weights mirror retap_core::TerrainConfig one for one; that
+# struct is the semantic source and these defaults must stay in sync with it
+# (see retap_ros2/config/terrain_sim.yaml, the other consumer).
+#
+# Structural parameters are read_only: changing the map file, resolution or the
+# terrain algorithm's hard thresholds requires re-analysing the whole tree, so
+# they are accepted at launch and rejected by `ros2 param set`.
+retap_terrain_map:
+  # ── static map source ────────────────────────────────────────────────────
+  map_format:
+    type: string
+    default_value: "bt"
+    read_only: true
+    description: "Static map format: 'bt' (terrain-analysed octomap, saved by retap_map_tool) or 'pcd' (raw point cloud)."
+  map_path:
+    type: string
+    default_value: ""
+    read_only: true
+    description: "Absolute path to the .bt or .pcd file. Empty = no prior map (online mapping only)."
+  resolution:
+    type: double
+    default_value: 0.2
+    read_only: true
+    description: "Global octree voxel size (metres); ReTAP's global map uses 0.2."
+    validation:
+      gt<>: [0.0]
+
+  # ── terrain analysis (retap_core::TerrainConfig) ─────────────────────────
+  slope_threshold:
+    type: double
+    default_value: 0.65
+    read_only: true
+    description: "Hard slope limit (rad)."
+    validation:
+      gt<>: [0.0]
+  roughness_threshold:
+    type: double
+    default_value: 0.5
+    read_only: true
+    description: "Hard roughness limit."
+  sparsity_threshold:
+    type: double
+    default_value: 0.7
+    read_only: true
+    description: "Hard sparsity limit."
+  traversability_threshold:
+    type: double
+    default_value: 0.805
+    read_only: true
+    description: "Hard traversability limit."
+  slope_weight:
+    type: double
+    default_value: 0.5
+    read_only: true
+    description: "Weight of slope inside the traversability score."
+  roughness_weight:
+    type: double
+    default_value: 0.3
+    read_only: true
+    description: "Weight of roughness inside the traversability score."
+  sparsity_weight:
+    type: double
+    default_value: 0.2
+    read_only: true
+    description: "Weight of sparsity inside the traversability score."
+  traversability_weight:
+    type: double
+    default_value: 2.3
+    read_only: true
+    description: "Weight of the traversability score itself."
+  points_number_threshold:
+    type: int
+    default_value: 20
+    read_only: true
+    description: "NDT point count above which a voxel's own statistics are trusted."
+    validation:
+      gt<>: [0]
+  collision_neighbor:
+    type: int
+    default_value: 17
+    read_only: true
+    description: "Collision neighbour ring: 9, 17 or 25. 17 is ReTAP's default and the value S1 calibrated with."
+  frame_height:
+    type: double
+    default_value: 0.5
+    read_only: true
+    description: "Vehicle frame height used by the clearance check (metres)."
+  filling_radius:
+    type: double
+    default_value: 0.5
+    read_only: true
+    description: "Filling radius used by terrainInit()."
+
+  # ── diagnostics ──────────────────────────────────────────────────────────
+  publish_diagnostics:
+    type: bool
+    default_value: true
+    description: "Publish retap/map/{traversability,collision,drivable} point clouds through the injected visualizer."
+  downsample_diagnostics:
+    type: int
+    default_value: 1
+    description: "Publish every Nth occupied voxel (1 = all)."
+    validation:
+      gt<>: [0]
+  diagnostics_period_sec:
+    type: double
+    default_value: 1.0
+    description: "Republish the cached diagnostic clouds at this rate (0 = publish once at load). The visualizer uses volatile QoS, so a late RViz would miss a one-shot."
+    validation:
+      gt_eq<>: [0.0]
+
+  # ── online incremental mapping (S5; off by default) ──────────────────────
+  online_mapping:
+    type: bool
+    default_value: false
+    description: "Register a PointCloud2 observation source and analyse incoming scans incrementally."
+  scan_topic:
+    type: string
+    default_value: "/cloud_registered"
+    description: "PointCloud2 topic, already expressed in the map frame."
+  scan_in_map_frame:
+    type: bool
+    default_value: true
+    description: "If false, scans are dropped (TF lookup is not wired in this build)."
+  update_free:
+    type: int
+    default_value: 0
+    description: "IgTree free-space policy: 0 = none (static), 2 = 1 m behind each hit (online)."
+  max_range:
+    type: double
+    default_value: 10.0
+    description: "Ray-cast range limit for online scans (metres)."
+    validation:
+      gt<>: [0.0]
+  max_buffer_size:
+    type: int
+    default_value: 2
+    description: "Observation buffer depth, matching ReTAP's global_map/max_buffer_size."
+    validation:
+      gt<>: [0]
+  max_scans_per_cycle:
+    type: int
+    default_value: 4
+    description: "Upper bound on scans fused in one MapRuntime update cycle."
+    validation:
+      gt<>: [0]
+  terrain_update_batch:
+    type: int
+    default_value: 3
+    description: "Flush the scan queue once this many scans are pending, matching ReTAP's terrainUpdate() list_size >= 3."
+    validation:
+      gt<>: [0]
+  terrain_update_period_sec:
+    type: double
+    default_value: 0.5
+    description: "Flush the scan queue at least this often, matching ReTAP's terrainUpdate() window."
+    validation:
+      gt<>: [0.0]

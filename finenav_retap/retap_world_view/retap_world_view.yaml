@@ -1,0 +1,19 @@
+# RetapWorldView parameter definition.
+#
+# The top-level key must equal the name passed to FINENAV_REGISTER_WORLDVIEW
+# ("retap_world_view").  Like every Planner and Map, the view's parameters live
+# under that prefix:
+#
+#   <engine_node>/<layer_name>:
+#     ros__parameters:
+#       retap_world_view:
+#         search_margin: 3.0
+retap_world_view:
+  search_margin:
+    type: double
+    default_value: 3.0
+    description: "Metres added around the start/goal box before intersecting it with the map bounds. Must exceed the planner's snap_radius."
+  publish_markers:
+    type: bool
+    default_value: true
+    description: "Publish the snapped start/goal spheres on /retap/goal."

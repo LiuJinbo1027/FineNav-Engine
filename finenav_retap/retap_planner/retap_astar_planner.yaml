@@ -1,0 +1,60 @@
+# RetapAstarPlanner parameter definition.
+#
+# The top-level key must equal the name passed to FINENAV_REGISTER_PLANNER
+# ("retap_astar_planner").  It is also the parameter prefix
+# generate_parameter_library declares under, so YAML nests one level deeper:
+#
+#   <engine_node>/<layer_name>:
+#     ros__parameters:
+#       retap_astar_planner:
+#         heuristic_weight: 0.5
+#
+# The three weights are ReTAP's Astar constructor arguments, in the upstream
+# order: (h_w, t_w, g_w) = (heuristic, traversability, distance).
+retap_astar_planner:
+  heuristic_weight:
+    type: double
+    default_value: 0.5
+    description: "Weight of the Chebyshev heuristic inside F (upstream astar_hueristic_weight)."
+  traversability_weight:
+    type: double
+    default_value: 0.5
+    description: "Weight of the accumulated traversability cost (upstream astar_traversability_weight)."
+  distance_weight:
+    type: double
+    default_value: 1.0
+    description: "Weight of path length (upstream astar_distance_weight)."
+
+  # ── budgets: the search runs inside FineNav's map read lock ─────────────
+  max_expansions:
+    type: int
+    default_value: 500000
+    description: "Hard cap on expanded nodes; 0 = unlimited."
+  time_budget_ms:
+    type: double
+    default_value: 500.0
+    description: "Wall-clock cap on one search (ms); 0 = unlimited."
+
+  # ── start/goal handling (upstream GlobalPlanning semantics) ─────────────
+  goal_z_tolerance_voxels:
+    type: int
+    default_value: 2
+    description: "Goal is reached when |z - goal_z| <= this many voxels (upstream hard-coded 2)."
+  stop_distance:
+    type: double
+    default_value: 0.2
+    description: "Snapped goal closer than this to the robot ends the episode with a one-pose path."
+  snap_radius:
+    type: double
+    default_value: 1.0
+    description: "Radius searched for the nearest drivable voxel to the robot and to the goal."
+
+  # ── diagnostics ─────────────────────────────────────────────────────────
+  verbose:
+    type: bool
+    default_value: false
+    description: "Re-enable ReTAP's per-node stdout diagnostics."
+  publish_path:
+    type: bool
+    default_value: true
+    description: "Publish the path as a MarkerArray on /retap/path."

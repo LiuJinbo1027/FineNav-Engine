@@ -1,0 +1,36 @@
+<!--
+  ReTAP demo — behaviour tree, mirroring finenav_example/getting_started.
+
+  Navigate to a goal pose through the "navigate" branch (retap_layer), then
+  stop the chassis.  The robot does not move in phase 1, so IsGoalReached keeps
+  failing and the pipeline stays RUNNING: the point is the trajectory on
+  _root/retap_layer/__feedback, not arrival.
+
+  The path is pose-only, so ChassisCmdVel rejects it with a WARN
+  ("ChassisCommand rejected trajectory") — expected for a global planner in
+  phase 1.
+  -->
+<root BTCPP_format="4">
+
+    <BehaviorTree ID="RetapNavigate">
+        <Sequence>
+            <PublishNavigationGoal/>
+            <RetryUntilSuccessful num_attempts="-1">
+                <Sequence name="TrackThenStop">
+                    <ReactiveFallback name="NavigateOrSucceed">
+                        <IsGoalReached  robot_pose="{robot_pose}"
+                                        robot_twist="{robot_twist}"
+                                        goal_poses="{goal_poses}"
+                                        xy_tolerance="0.25"
+                                        yaw_tolerance="0.1"
+                                        speed_tolerance="0.1"/>
+                        <ExecuteControlPipelineBranch branch="navigate"/>
+                    </ReactiveFallback>
+                    <!-- Goal reached: publish zero velocity and succeed -->
+                    <StopChassisMotion/>
+                </Sequence>
+            </RetryUntilSuccessful>
+        </Sequence>
+    </BehaviorTree>
+
+</root>
