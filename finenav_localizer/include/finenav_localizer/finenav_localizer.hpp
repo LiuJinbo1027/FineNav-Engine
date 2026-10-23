@@ -75,6 +75,11 @@ private:
     void onOdometry(const OdomMsg& msg);
     void onInitialPose(const PoseMsg& msg);
 
+    /// Shared body of onPose / onInitialPose: fold one absolute pose
+    /// observation into the world anchor. Not gated on pose routing — a
+    /// one-shot initial pose is valid even with pose_topic disabled.
+    void applyAbsolutePose(const PoseMsg& msg);
+
     /// TimerCallback with frequency of kInternalTickRateHz (default = 100Hz)
     /// Used for:
     /// 1. Pose observation smoothing

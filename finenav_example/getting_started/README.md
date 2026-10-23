@@ -37,7 +37,11 @@ ros2 run finenav_example hello_finenav \
 ```
 
 ### Terminal 3 — Set Initial Pose
-TODO: use Rviz2 tool to set initial pose.
+
+`/initialpose` is a **one-shot absolute pose**: the localizer folds it into its
+world anchor once, then drops the subscription.  It works even though
+`pose_topic` is empty here.  Rviz2's *2D Pose Estimate* tool publishes to the
+same topic — either is fine.
 ```bash
 ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped "{
   header: {
@@ -70,6 +74,18 @@ ros2 topic pub --once /initialpose geometry_msgs/msg/PoseWithCovarianceStamped "
 }"
 ```
 
+> **The pose must match where the robot actually is.**  The message is taken as
+> the robot pose in the world frame — `frame_id` is ignored, no TF lookup is
+> done — and the estimator then holds `state = anchor ⊕ odom`.  A wrong initial
+> pose therefore shifts *every* later estimate by the same offset: publish
+> x = 3.0 for a robot at x = 2.0 and the pose reads 1 m off forever.
+> The values above are the true pose for this world (spawn 2.0, 2.0 → `base_link`
+> at z ≈ 0.75).  `stamp` only tags the history sample — the example keeps a
+> stale one from a recording, which is harmless for a single publish.
+>
+> Because it is one-shot, a second publish finds no subscriber.  To re-set the
+> pose, restart Terminal 2.
+
 Now, you can use Rviz2 to publish a goal pose. The dummy planner computes a twist toward the goal.  Verify with `ros2 topic echo /cmd_vel`.
 
 ## How It Works
@@ -88,16 +104,25 @@ Navigator reads feedback from the layer and publishes `/cmd_vel`.
 
 | Section | Parameter | Purpose |
 |---|---|---|
-| `hello_finenav/finenav_localizer` | `odom0: "/odom"` | Subscribe to simulator ground truth |
-| | `publish_tf: true` | Broadcast `map→base_link` |
+| `hello_finenav/finenav_localizer` | `odom_topic: "/odom"` | Subscribe to simulator ground truth |
+| | `odom_use_twist: true` | Take velocity from `/odom.twist` |
+| | `initial_pose_topic: "/initialpose"` | One-shot absolute pose (Terminal 3) |
+| | `publish_tf: false` | TF is the simulator's job — see below |
 | | `force_2d_mode: true` | Planar constraint |
 | `hello_finenav/finenav_navigator` | `behavior_trees` | Load the example's BT XML |
+
+Keep `publish_tf: false` here.  The simulator already supplies the whole chain
+(`map→odom` identity, plus `odom→base_link` from `simulator_helper`), while the
+localizer broadcasts `map→base_link` **directly** — the framework has no odom
+frame — so enabling it gives `base_link` two parents.
 
 ## Troubleshooting
 
 | Symptom | Check |
 |---|---|
 | Robot doesn't move | `ros2 topic echo /cmd_vel` |
-| No TF | Ensure `publish_tf: true` in params |
+| No TF | Simulator's `map→odom` + `odom→base_link` (keep localizer `publish_tf: false`) |
+| `no absolute pose source ... will drift` WARN | Harmless with ground-truth `/odom` — publish `/initialpose` to silence it |
+| Robot pose offset by a constant | A wrong `/initialpose` shifted the anchor |
 | "behavior tree ID is empty" | `setDefaultBehaviorTree()` was not called |
 | "Failed to create tree" | Ensure `behavior_trees` includes the example's BT directory |

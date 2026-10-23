@@ -135,10 +135,17 @@ FineNavLocalizer::FineNavLocalizer(rclcpp::Node::SharedPtr parent_node,
 
 
 void FineNavLocalizer::onInitialPose(const PoseMsg& msg) {
-    onPose(msg);
+    // A one-shot initial pose is an absolute observation in its own right:
+    // apply it even when the continuous pose channel (pose_topic) is disabled.
+    applyAbsolutePose(msg);
 }
 
 void FineNavLocalizer::onPose(const PoseMsg& msg) {
+    if (routing_.pose != Routing::PoseSrc::Pose) return;
+    applyAbsolutePose(msg);
+}
+
+void FineNavLocalizer::applyAbsolutePose(const PoseMsg& msg) {
     const auto& pose = msg.pose.pose;
     const Eigen::Vector3d    obs_p(pose.position.x, pose.position.y, pose.position.z);
     const Eigen::Quaterniond obs_q(pose.orientation.w, pose.orientation.x,
@@ -147,8 +154,6 @@ void FineNavLocalizer::onPose(const PoseMsg& msg) {
 
     {
         std::lock_guard<std::mutex> lk(state_mutex_);
-
-        if (routing_.pose != Routing::PoseSrc::Pose) return;
 
         // ── Resolve odometry at the observation timestamp ────────────────
         Eigen::Vector3d    odom_p_at_obs = odom_cache_.position();
