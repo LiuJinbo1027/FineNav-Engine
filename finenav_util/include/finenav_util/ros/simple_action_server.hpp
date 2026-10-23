@@ -66,8 +66,38 @@ class SimpleActionServer
         {
             std::lock_guard<std::recursive_mutex> lock(update_mutex_);
             stop_execution_ = true;
-            if (current_handle_) {
-                current_handle_->abort(std::make_shared<typename ActionT::Result>());
+            // abort() first moves the goal to a terminal state, then publishes
+            // the result.  The publish can fail after shutdown ("Asked to
+            // publish result for goal that does not exist"), but _abort() has
+            // already run and that is the part we need: a goal left active is
+            // published from ~ServerGoalHandle, whose deleter runs inside the
+            // noexcept _M_dispose() of the shared_ptr and cannot be caught --
+            // it would call std::terminate.  So always abort, even when the
+            // context is already gone, and swallow only the publish failure.
+            if (current_handle_ && current_handle_->is_active()) {
+                try {
+                    current_handle_->abort(std::make_shared<typename ActionT::Result>());
+                } catch (const std::exception & ex) {
+                    FINENAV_LOG_INFO(node_->get_logger(), "abort() during shutdown: {}", ex.what());
+                }
+            }
+            // Releasing a GoalHandle then runs rclcpp_action's deleter only for
+            // a still-active goal, which cannot happen above.  Drop the handles
+            // here anyway so their release is not left to the member destructors.
+            try {
+                current_handle_.reset();
+            } catch (const std::exception &) {
+            }
+            try {
+                pending_handle_.reset();
+            } catch (const std::exception &) {
+            }
+            // The action server keeps its own reference to every goal handle,
+            // so its destruction releases the last one and runs the same
+            // deleter.  Destroy it here, inside the same guard.
+            try {
+                action_server_.reset();
+            } catch (const std::exception &) {
             }
         }
         if (worker_thread_.joinable()) {
@@ -255,10 +285,21 @@ class SimpleActionServer
 
             std::lock_guard<std::recursive_mutex> lock(update_mutex_);
 
-            // If current goal is still active, but not set to succeeded, abort it
+            // If current goal is still active, but not set to succeeded, abort it.
+            // Always attempt this: abort() terminalizes the goal before it
+            // publishes, and only the terminal state protects the later handle
+            // destructor from publishing inside a noexcept deleter.
             if (current_handle_ && current_handle_->is_active()) {
-                FINENAV_LOG_WARN(node_->get_logger(), "Goal finished but result not set, aborting.");
-                current_handle_->abort(std::make_shared<typename ActionT::Result>());
+                if (rclcpp::ok()) {
+                    FINENAV_LOG_WARN(node_->get_logger(), "Goal finished but result not set, aborting.");
+                } else {
+                    FINENAV_LOG_INFO(node_->get_logger(), "Shutdown requested; aborting the active goal.");
+                }
+                try {
+                    current_handle_->abort(std::make_shared<typename ActionT::Result>());
+                } catch (const std::exception & ex) {
+                    FINENAV_LOG_WARN(node_->get_logger(), "abort() failed: {}", ex.what());
+                }
             }
 
             // If there's a pending goal, promote it to current, and continue loop
