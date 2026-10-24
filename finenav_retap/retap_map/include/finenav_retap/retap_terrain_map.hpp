@@ -133,6 +133,9 @@ private:
     bool scan_in_map_frame_ = true;
     int update_free_ = 0;
     double max_range_ = 10.0;
+    // Sensor origin in base_link; ray casting starts here, like ReTAP's
+    // getSensorPoseTF(lidar_frame_).  Rotated by the robot's yaw.
+    Eigen::Vector3f origin_offset_{Eigen::Vector3f::Zero()};
     int max_buffer_size_ = 2;
     int max_scans_per_cycle_ = 4;
     int terrain_update_batch_ = 3;
@@ -163,6 +166,15 @@ private:
     std::chrono::steady_clock::time_point last_flush_{};
     std::chrono::steady_clock::time_point last_publish_{};
     bool scan_frame_warned_ = false;
+
+    // ── online counters (every received scan is one of processed/dropped) ─
+    std::atomic<size_t> scans_received_{0};
+    std::atomic<size_t> scans_processed_{0};
+    std::atomic<size_t> scans_dropped_{0};
+    // Stats tick (1 s) and its log (5 s), independent of last_publish_ so the
+    // diagnostics republish thread cannot starve them.
+    std::chrono::steady_clock::time_point last_stats_tick_{};
+    std::chrono::steady_clock::time_point last_stats_log_{};
 
     rclcpp::Logger logger_{rclcpp::get_logger("RetapTerrainMap")};
     finenav::viz::FineNavVisualizer viz_;

@@ -18,6 +18,8 @@
 
 #pragma once
 
+#include <cstdint>
+
 #include "finenav_core/plugin_world_view.hpp"
 #include "finenav_visualizer/finenav_visualizer.hpp"
 
@@ -52,6 +54,9 @@ public:
     bool nearestDrivable(const finenav::common::Position3D& q,
                          finenav::common::Position3D& out,
                          double max_radius) const override;
+
+    // Bumped by every terrain evaluation; constant for a static map.
+    uint64_t mapGeneration() const override { return map_.model().generation(); }
 
 private:
     void publishGoalMarkers(const finenav::common::Position3D& start,

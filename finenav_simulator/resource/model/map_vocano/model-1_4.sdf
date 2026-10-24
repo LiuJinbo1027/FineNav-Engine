@@ -19,12 +19,13 @@
             <scale>2.0 2.0 2.0</scale>
           </mesh>
         </geometry>
+        <!-- OGRE <script> materials are a Gazebo-Classic feature: Ignition
+             (gz-sim6 / Ogre2) ignores them and renders the mesh black.  Use
+             the SDF material fields instead. -->
         <material>
-          <script>
-            <uri>model://map_vocano/materials/scripts/map.material</uri>
-            <uri>model://map_vocano/materials/textures/texture.png</uri>
-            <name>map_vocano/Image</name>
-          </script>
+          <ambient>0.70 0.70 0.70 1</ambient>
+          <diffuse>0.80 0.74 0.66 1</diffuse>
+          <specular>0.10 0.10 0.10 1</specular>
         </material>
       </visual>
       <surface> 

@@ -19,6 +19,9 @@
 // loadAlgoPlugins() dlopens them so their static registrars fire.
 
 #include <memory>
+#include <string>
+#include <utility>
+#include <variant>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -56,12 +59,33 @@ int main(int argc, char** argv) {
     //    registered names, reuses the map server created above, builds the
     //    view and attaches it.
     //
-    //    EventDriven, not Periodic: the robot does not move in phase 1, and a
-    //    periodic policy would re-plan the same path and log the same WARN.
-    //    S5's online mapping switches this back to PeriodicPolicy.
+    //    S4 runs EventDriven: the robot does not move and the map is static, so
+    //    "plan once per goal" is exactly right.  S5 runs Periodic: the map
+    //    grows under the robot, so plan() is called on a timer and its own
+    //    replan throttle (replan_min_distance / replan_period_sec /
+    //    replan_on_map_change) decides whether to search again.
+    const std::string planner_policy =
+        node->declare_parameter<std::string>("planner_policy", "event");
+
+    finenav::core::ExecutionPolicyVariant policy;
+    if (planner_policy == "periodic") {
+        // PeriodicPolicy::declare_parameters() declares frequency_hz on the
+        // layer's private node, so the rate is set there:
+        //   <engine>/<layer>/ros__parameters/frequency_hz
+        policy = finenav::core::PeriodicPolicy{};
+    } else if (planner_policy == "event") {
+        policy = finenav::core::EventDrivenPolicy{};
+    } else {
+        RCLCPP_ERROR(node->get_logger(),
+                     "planner_policy must be 'event' or 'periodic' (got '%s').",
+                     planner_policy.c_str());
+        rclcpp::shutdown();
+        return 1;
+    }
+    RCLCPP_INFO(node->get_logger(), "planner_policy=%s", planner_policy.c_str());
+
     if (!engine->createControlLayerByWorldView(
-            "retap_world_view", "retap_layer",
-            finenav::core::EventDrivenPolicy{})) {
+            "retap_world_view", "retap_layer", std::move(policy))) {
         RCLCPP_ERROR(node->get_logger(),
                      "failed to assemble 'retap_layer' from WorldView "
                      "'retap_world_view'.");

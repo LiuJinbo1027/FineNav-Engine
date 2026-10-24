@@ -49,6 +49,34 @@ retap_astar_planner:
     default_value: 1.0
     description: "Radius searched for the nearest drivable voxel to the robot and to the goal."
 
+  # ── replan throttle ─────────────────────────────────────────────────────
+  # Upstream GlobalPlanning recomputed the path only when the robot had moved
+  # 0.2 m from the last planning point or 2 s had elapsed.  Under a periodic
+  # policy plan() is called every cycle, so the same gate keeps an unchanged
+  # search from re-taking the map read lock.
+  replan_min_distance:
+    type: double
+    default_value: 0.2
+    description: "Replan once the robot has moved this far from the last planning point (m)."
+    validation:
+      gt_eq<>: [0.0]
+  replan_period_sec:
+    type: double
+    default_value: 2.0
+    description: "Replan at least this often, even if nothing changed (s); 0 = only on the other triggers."
+    validation:
+      gt_eq<>: [0.0]
+  replan_min_interval_sec:
+    type: double
+    default_value: 0.5
+    description: "Minimum spacing between two replans caused by a map change (s), so a 10 Hz terrain update does not become a 10 Hz search."
+    validation:
+      gt_eq<>: [0.0]
+  replan_on_map_change:
+    type: bool
+    default_value: false
+    description: "Also replan when the map's terrain generation changes (online mapping). Off for a static prior."
+
   # ── diagnostics ─────────────────────────────────────────────────────────
   verbose:
     type: bool

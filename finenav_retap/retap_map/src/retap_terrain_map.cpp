@@ -71,6 +71,9 @@ void RetapTerrainMap::configure(const ConfigType& cfg) {
     scan_in_map_frame_ = cfg.scan_in_map_frame;
     update_free_ = static_cast<int>(cfg.update_free);
     max_range_ = cfg.max_range;
+    origin_offset_ = Eigen::Vector3f(static_cast<float>(cfg.origin_offset_x),
+                                     static_cast<float>(cfg.origin_offset_y),
+                                     static_cast<float>(cfg.origin_offset_z));
     max_buffer_size_ = static_cast<int>(cfg.max_buffer_size);
     max_scans_per_cycle_ = static_cast<int>(cfg.max_scans_per_cycle);
     terrain_update_batch_ = static_cast<int>(cfg.terrain_update_batch);
@@ -378,7 +381,14 @@ void RetapTerrainMap::registerOnlineMapping(finenav::core::MapRuntime& runtime) 
 }
 
 void RetapTerrainMap::enqueueScan(const sensor_msgs::msg::PointCloud2& msg) {
-    if (!scan_in_map_frame_) return;  // registerOnlineMapping() already warned
+    // Every delivered cloud ends up either processed or dropped, so the
+    // counters at the bottom of this file always balance.
+    scans_received_.fetch_add(1, std::memory_order_relaxed);
+
+    if (!scan_in_map_frame_) {  // registerOnlineMapping() already warned
+        scans_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
     std::vector<Eigen::Vector3f> points;
     points.reserve(static_cast<size_t>(msg.width) * msg.height);
@@ -396,12 +406,39 @@ void RetapTerrainMap::enqueueScan(const sensor_msgs::msg::PointCloud2& msg) {
     } catch (const std::exception& e) {
         RCLCPP_WARN_ONCE(logger_, "RetapTerrainMap: cannot read xyz from '%s': %s",
                          scan_topic_.c_str(), e.what());
+        scans_dropped_.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (points.empty()) return;
+    if (points.empty()) {
+        scans_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
 
-    std::lock_guard<std::mutex> lock(queue_mutex_);
-    scan_queue_.push_back(std::move(points));
+    // Bounded queue: the cycle consumes at most max_scans_per_cycle_ per
+    // flush, so a queue deeper than that only grows if the MapServer's update
+    // loop cannot keep up.  Drop the OLDEST scan in that case (ReTAP's
+    // global_cloud_list_ does the same at max_buffer_size) and count it.
+    const size_t queue_cap =
+        std::max<size_t>(1, static_cast<size_t>(max_buffer_size_)) *
+        std::max<size_t>(1, static_cast<size_t>(max_scans_per_cycle_));
+
+    bool dropped_oldest = false;
+    {
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+        scan_queue_.push_back(std::move(points));
+        while (scan_queue_.size() > queue_cap) {
+            scan_queue_.pop_front();
+            dropped_oldest = true;
+        }
+    }
+    if (dropped_oldest) {
+        scans_dropped_.fetch_add(1, std::memory_order_relaxed);
+        static rclcpp::Clock throttle_clock(RCL_STEADY_TIME);
+        RCLCPP_WARN_THROTTLE(logger_, throttle_clock, 5000,
+                             "RetapTerrainMap: scan queue full (%zu); dropped the "
+                             "oldest scan",
+                             queue_cap);
+    }
 }
 
 void RetapTerrainMap::processQueuedScans(const finenav::core::RobotState& state) {
@@ -436,9 +473,20 @@ void RetapTerrainMap::processQueuedScans(const finenav::core::RobotState& state)
     // ReTAP averages the insertion origins of a batch; with one RobotState per
     // cycle the latest pose is the same quantity, so every scan in the batch
     // shares it.  It is also the root the connectivity pass grows from.
-    const Eigen::Vector3f origin(static_cast<float>(state.pose.position.x),
-                                 static_cast<float>(state.pose.position.y),
-                                 static_cast<float>(state.pose.position.z));
+    // Ray casting starts at the sensor, so the base_link pose is shifted by
+    // origin_offset_ (ReTAP: getSensorPoseTF(lidar_frame_)).  Only yaw is
+    // applied — the mount's pitch/roll move the origin by millimetres.
+    const auto& q = state.pose.orientation;
+    const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    const double c = std::cos(yaw);
+    const double s = std::sin(yaw);
+    const Eigen::Vector3f origin(
+        static_cast<float>(state.pose.position.x) +
+            static_cast<float>(c * origin_offset_.x() - s * origin_offset_.y()),
+        static_cast<float>(state.pose.position.y) +
+            static_cast<float>(s * origin_offset_.x() + c * origin_offset_.y()),
+        static_cast<float>(state.pose.position.z) + origin_offset_.z());
 
     retap_core::ScanOptions opts;
     opts.update_free = update_free_;
@@ -451,24 +499,51 @@ void RetapTerrainMap::processQueuedScans(const finenav::core::RobotState& state)
         dirty.insert(result.occupied_keys.begin(), result.occupied_keys.end());
         ++fused;
     }
+    scans_processed_.fetch_add(fused, std::memory_order_relaxed);
     if (dirty.empty()) return;
     model_->evaluateDirty(dirty, origin);
 
-    // Counters are only maintained on the diagnostics clock: a full-tree walk
-    // per cycle would scale with the map, not with the scan.
+    // Counters are only maintained on the stats clock: a full-tree walk per
+    // cycle would scale with the map, not with the scan.  This must run even
+    // when publishing is off — ready() and bounds() are what the WorldView
+    // gates on, and an online map starts empty (ready_ == false).
+    //
+    // It has its own timestamp: the diagnostics republish thread also advances
+    // last_publish_, so gating on that starved this block to one run per few
+    // minutes whenever a prior map had started the thread.
     const auto now = std::chrono::steady_clock::now();
-    const bool publish_due =
-        publish_diagnostics_ &&
-        (last_publish_.time_since_epoch().count() == 0 ||
-         std::chrono::duration<double>(now - last_publish_).count() >=
-             kDiagnosticPeriodSec);
-    if (publish_due) {
+    const bool stats_due =
+        last_stats_tick_.time_since_epoch().count() == 0 ||
+        std::chrono::duration<double>(now - last_stats_tick_).count() >=
+            kDiagnosticPeriodSec;
+    if (stats_due) {
+        last_stats_tick_ = now;
         const retap_core::TerrainStats stats = retap_core::computeStats(model_->tree());
         occupied_voxels_ = stats.occupied_voxels;
         drivable_voxels_ = stats.drivable_voxels;
         ready_ = drivable_voxels_ > 0;
         computeBounds();
-        publishDiagnostics();
+        if (publish_diagnostics_) publishDiagnostics();
+
+        // Every 5 s: account for the scans.  received == processed + dropped
+        // by construction, so a non-zero dropped count is the whole story of
+        // any loss (unreadable cloud, wrong frame or a full queue).
+        if (last_stats_log_.time_since_epoch().count() == 0 ||
+            std::chrono::duration<double>(now - last_stats_log_).count() >= 5.0) {
+            size_t queued = 0;
+            {
+                std::lock_guard<std::mutex> lock(queue_mutex_);
+                queued = scan_queue_.size();
+            }
+            RCLCPP_INFO(logger_,
+                        "RetapTerrainMap: online %zu scans (processed %zu, "
+                        "dropped %zu, queued %zu); map %zu occupied, %zu drivable",
+                        scans_received_.load(std::memory_order_relaxed),
+                        scans_processed_.load(std::memory_order_relaxed),
+                        scans_dropped_.load(std::memory_order_relaxed), queued,
+                        occupied_voxels_, drivable_voxels_);
+            last_stats_log_ = now;
+        }
     }
 
     RCLCPP_DEBUG(logger_, "RetapTerrainMap: fused %zu scans, %zu dirty voxels",

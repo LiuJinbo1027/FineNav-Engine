@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "finenav_core/algo_register_macros.hpp"
@@ -61,11 +62,18 @@ void RetapAstarPlanner::configure(const ConfigType& cfg) {
     snap_radius_ = cfg.snap_radius;
     verbose_ = cfg.verbose;
     publish_path_ = cfg.publish_path;
+    replan_min_distance_ = cfg.replan_min_distance;
+    replan_period_sec_ = cfg.replan_period_sec;
+    replan_min_interval_sec_ = cfg.replan_min_interval_sec;
+    replan_on_map_change_ = cfg.replan_on_map_change;
 }
 
 void RetapAstarPlanner::reset() {
     // The search is stateless across episodes (Astar is built per plan), so
-    // there is nothing to clear; the counter only feeds the log.
+    // the only state to drop is the replan-throttle cache: a new goal must
+    // not be answered from the previous episode's path.
+    has_plan_ = false;
+    cached_.reset();
     plan_count_ = 0;
     RCLCPP_INFO(logger_, "reset(): new episode");
 }
@@ -96,6 +104,35 @@ RetapAstarPlanner::Result RetapAstarPlanner::plan(const Context& ctx,
         toPosition(ctx.robot_state.pose.position);
     const finenav::common::Position3D goal =
         toPosition(ctx.ref_traj.poses.back().position);
+
+    // ── replan throttle ─────────────────────────────────────────────────
+    // Upstream GlobalPlanning replanned only after moving 0.2 m or waiting
+    // 2 s.  The gate sits before snapping and A*: under a periodic policy
+    // plan() is called every cycle, and re-running an unchanged search would
+    // burn the map read lock for nothing.  Triggers: new goal (a mid-episode
+    // reference change; a new episode calls reset()), the robot moved, the
+    // period elapsed, or the live map changed (rate-limited by
+    // replan_min_interval_sec_ so terrain updates do not become searches).
+    const auto now = std::chrono::steady_clock::now();
+    const double since_last =
+        has_plan_
+            ? std::chrono::duration<double>(now - last_plan_time_).count()
+            : std::numeric_limits<double>::infinity();
+    const bool moved =
+        !has_plan_ || norm(start - last_start_) > replan_min_distance_;
+    const bool goal_changed =
+        !has_plan_ || norm(goal - last_goal_) > 1e-6;
+    const bool period_due =
+        !has_plan_ || (replan_period_sec_ > 0.0 &&
+                       since_last >= replan_period_sec_);
+    const bool map_changed =
+        replan_on_map_change_ && has_plan_ &&
+        view.mapGeneration() != last_map_generation_ &&
+        since_last >= replan_min_interval_sec_;
+    if (has_plan_ && !moved && !goal_changed && !period_due && !map_changed) {
+        RCLCPP_DEBUG(logger_, "reusing the previous path (%.2f s old)", since_last);
+        return cached_;
+    }
 
     finenav::common::Position3D start_snapped;
     finenav::common::Position3D goal_snapped;
@@ -201,6 +238,15 @@ RetapAstarPlanner::Result RetapAstarPlanner::plan(const Context& ctx,
         markers.addPath(viz_points, 0.03, finenav::viz::ColorName::CYAN);
         viz_.publish(markers);
     }
+
+    // Remember what this path was computed from.  Failures are not cached:
+    // a nullopt faults the stage, so there is no next cycle to reuse it in.
+    has_plan_ = true;
+    last_start_ = start;
+    last_goal_ = goal;
+    last_map_generation_ = view.mapGeneration();
+    last_plan_time_ = std::chrono::steady_clock::now();
+    cached_ = result;
     return result;
 }
 

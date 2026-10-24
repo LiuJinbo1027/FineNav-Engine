@@ -19,6 +19,8 @@
 
 #pragma once
 
+#include <chrono>
+#include <cstdint>
 #include <optional>
 
 // The planner role's entry point: concept, geometry vocabulary, Trajectory.
@@ -54,6 +56,11 @@ public:
     virtual bool nearestDrivable(const finenav::common::Position3D& q,
                                  finenav::common::Position3D& out,
                                  double max_radius) const = 0;
+
+    /// Monotonic terrain generation.  A live map bumps it on every terrain
+    /// update, so the planner can tell whether the voxels it last searched
+    /// are still the current ones.  A static map returns a constant.
+    virtual uint64_t mapGeneration() const = 0;
 };
 
 class RetapAstarPlanner {
@@ -92,6 +99,23 @@ private:
     double snap_radius_ = 1.0;
     bool  verbose_ = false;
     bool  publish_path_ = true;
+
+    // ── replan throttle (upstream GlobalPlanning: moved > 0.2 m or > 2 s) ──
+    // The periodic policy calls plan() every cycle; the search only runs when
+    // one of these triggers fires.  A live map adds the generation trigger,
+    // gated by replan_min_interval_sec_ so a 10 Hz map update does not turn
+    // into a 10 Hz search.
+    double replan_min_distance_ = 0.2;
+    double replan_period_sec_ = 2.0;
+    double replan_min_interval_sec_ = 0.5;
+    bool   replan_on_map_change_ = false;
+
+    bool has_plan_ = false;
+    finenav::common::Position3D last_start_{};
+    finenav::common::Position3D last_goal_{};
+    uint64_t last_map_generation_ = 0;
+    std::chrono::steady_clock::time_point last_plan_time_{};
+    Result cached_;
 
     uint64_t plan_count_ = 0;
 

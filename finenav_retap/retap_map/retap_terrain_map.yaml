@@ -95,12 +95,12 @@ retap_terrain_map:
     type: double
     default_value: 0.5
     read_only: true
-    description: "Vehicle frame height used by the clearance check (metres)."
+    description: "Only terrainInit() uses this: the synthetic ground patch is inserted at lidar_z + frame_height. terrainInit() has no caller in the static/online paths, so the value is inert here; the clearance check uses collision_neighbor instead."
   filling_radius:
     type: double
     default_value: 0.5
     read_only: true
-    description: "Filling radius used by terrainInit()."
+    description: "Only terrainInit() uses this: radius of its synthetic ground patch. Inert unless terrainInit() is called (it is not, in the static/online paths)."
 
   # ── diagnostics ──────────────────────────────────────────────────────────
   publish_diagnostics:
@@ -143,6 +143,22 @@ retap_terrain_map:
     description: "Ray-cast range limit for online scans (metres)."
     validation:
       gt<>: [0.0]
+  # The scan is ray-cast from the sensor, not from base_link.  ReTAP reads the
+  # sensor pose from TF (getSensorPoseTF(lidar_frame_)); here the offset is a
+  # parameter so the Map plugin needs no tf2 dependency.  The vector is
+  # expressed in base_link and rotated by the robot's yaw.
+  origin_offset_x:
+    type: double
+    default_value: 0.0
+    description: "Sensor origin offset from base_link, x (metres)."
+  origin_offset_y:
+    type: double
+    default_value: 0.0
+    description: "Sensor origin offset from base_link, y (metres)."
+  origin_offset_z:
+    type: double
+    default_value: 0.0
+    description: "Sensor origin offset from base_link, z (metres)."
   max_buffer_size:
     type: int
     default_value: 2

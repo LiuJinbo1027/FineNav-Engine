@@ -55,3 +55,11 @@ install(TARGETS retap_global_planner_node
 install(DIRECTORY config
     DESTINATION share/${PROJECT_NAME}
 )
+
+# S5: export a Gazebo terrain model to a world-frame .pcd, so the prior map and
+# the live lidar scans are the same surface.  Invoked by
+# demo/launch/retap_s5_sim.launch.py when the prior .bt is missing.
+install(PROGRAMS scripts/export_gazebo_pcd.py
+    DESTINATION lib/${PROJECT_NAME}
+    RENAME export_gazebo_pcd
+)
