@@ -32,7 +32,7 @@
 #include <vector>
 
 #ifdef RETAP_HAS_OCTOMAP_MSGS
-#include <octomap_msgs/conversions.hpp>
+#include <octomap_msgs/conversions.h>
 #include <octomap_msgs/msg/octomap.hpp>
 #endif
 
@@ -100,8 +100,11 @@ class RetapGlobalPlannerNode : public rclcpp::Node {
       map_sub_ = create_subscription<octomap_msgs::msg::Octomap>(
           map_topic_, rclcpp::QoS(1).transient_local(),
           [this](octomap_msgs::msg::Octomap::ConstSharedPtr msg) {
-            std::shared_ptr<octomap::AbstractOcTree> tree =
-                octomap_msgs::msgToMap(*msg);
+            // msgToMap() returns a caller-owned raw pointer; shared_ptr's
+            // constructor from a raw pointer is explicit, so this must be
+            // direct-initialised ('=' would not compile).
+            std::shared_ptr<octomap::AbstractOcTree> tree{
+                octomap_msgs::msgToMap(*msg)};
             auto ig_tree = std::dynamic_pointer_cast<octomap::IgTree>(tree);
             if (ig_tree == nullptr) {
               RCLCPP_ERROR(get_logger(),
