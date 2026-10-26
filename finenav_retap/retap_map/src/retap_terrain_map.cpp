@@ -459,10 +459,12 @@ void RetapTerrainMap::registerOnlineMapping(finenav::core::MapRuntime& runtime) 
     runtime.addObservationSource<sensor_msgs::msg::PointCloud2>(
         "lidar", scan_topic_, rclcpp::SensorDataQoS(), policy,
         [this](const sensor_msgs::msg::PointCloud2& msg, const rclcpp::Time&,
-               const finenav::core::RobotState&) {
+               const finenav::core::RobotState& state) {
             // Copy into our own queue; the tree is only touched from the
-            // post-update hook, under the MapServer write lock.
-            enqueueScan(msg);
+            // post-update hook, under the MapServer write lock.  `state` is
+            // the pose interpolated at this cloud's header.stamp, so the ray
+            // origin is fixed here instead of at flush time.
+            enqueueScan(msg, sensorOrigin(state));
         });
 
     runtime.registerPostUpdateHook(
@@ -475,7 +477,26 @@ void RetapTerrainMap::registerOnlineMapping(finenav::core::MapRuntime& runtime) 
                 terrain_update_period_sec_, max_scans_per_cycle_);
 }
 
-void RetapTerrainMap::enqueueScan(const sensor_msgs::msg::PointCloud2& msg) {
+Eigen::Vector3f RetapTerrainMap::sensorOrigin(
+    const finenav::core::RobotState& state) const {
+    // Ray casting starts at the sensor, not base_link, so the mount offset is
+    // applied in the map frame (ReTAP: getSensorPoseTF(lidar_frame_)).  Only
+    // yaw is applied — the mount's pitch/roll move the origin by millimetres.
+    const auto& q = state.pose.orientation;
+    const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
+                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z));
+    const double c = std::cos(yaw);
+    const double s = std::sin(yaw);
+    return Eigen::Vector3f(
+        static_cast<float>(state.pose.position.x) +
+            static_cast<float>(c * origin_offset_.x() - s * origin_offset_.y()),
+        static_cast<float>(state.pose.position.y) +
+            static_cast<float>(s * origin_offset_.x() + c * origin_offset_.y()),
+        static_cast<float>(state.pose.position.z) + origin_offset_.z());
+}
+
+void RetapTerrainMap::enqueueScan(const sensor_msgs::msg::PointCloud2& msg,
+                                  const Eigen::Vector3f& origin) {
     // Every delivered cloud ends up either processed or dropped, so the
     // counters at the bottom of this file always balance.
     scans_received_.fetch_add(1, std::memory_order_relaxed);
@@ -520,7 +541,7 @@ void RetapTerrainMap::enqueueScan(const sensor_msgs::msg::PointCloud2& msg) {
     bool dropped_oldest = false;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
-        scan_queue_.push_back(std::move(points));
+        scan_queue_.push_back(QueuedScan{std::move(points), origin});
         while (scan_queue_.size() > queue_cap) {
             scan_queue_.pop_front();
             dropped_oldest = true;
@@ -542,7 +563,7 @@ void RetapTerrainMap::processQueuedScans(const finenav::core::RobotState& state)
     // ReTAP's terrainUpdate() waits until the update list has >= 3 entries or
     // 0.5 s have passed since the last analysis.  The same rule applies here;
     // max_scans_per_cycle then bounds the work done under the map write lock.
-    std::vector<std::vector<Eigen::Vector3f>> batch;
+    std::vector<QueuedScan> batch;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         if (scan_queue_.empty()) return;
@@ -565,23 +586,11 @@ void RetapTerrainMap::processQueuedScans(const finenav::core::RobotState& state)
         last_flush_ = now;
     }
 
-    // ReTAP averages the insertion origins of a batch; with one RobotState per
-    // cycle the latest pose is the same quantity, so every scan in the batch
-    // shares it.  It is also the root the connectivity pass grows from.
-    // Ray casting starts at the sensor, so the base_link pose is shifted by
-    // origin_offset_ (ReTAP: getSensorPoseTF(lidar_frame_)).  Only yaw is
-    // applied — the mount's pitch/roll move the origin by millimetres.
-    const auto& q = state.pose.orientation;
-    const double yaw = std::atan2(2.0 * (q.w * q.z + q.x * q.y),
-                                  1.0 - 2.0 * (q.y * q.y + q.z * q.z));
-    const double c = std::cos(yaw);
-    const double s = std::sin(yaw);
-    const Eigen::Vector3f origin(
-        static_cast<float>(state.pose.position.x) +
-            static_cast<float>(c * origin_offset_.x() - s * origin_offset_.y()),
-        static_cast<float>(state.pose.position.y) +
-            static_cast<float>(s * origin_offset_.x() + c * origin_offset_.y()),
-        static_cast<float>(state.pose.position.z) + origin_offset_.z());
+    // The ray origins were fixed at each scan's header.stamp when it was
+    // enqueued, so a batch spanning several stamps still carves free space
+    // from the right sensor poses.  The connectivity pass, on the other hand,
+    // grows from the robot's current position, which is what `state` is.
+    const Eigen::Vector3f center = sensorOrigin(state);
 
     retap_core::ScanOptions opts;
     opts.update_free = update_free_;
@@ -589,14 +598,15 @@ void RetapTerrainMap::processQueuedScans(const finenav::core::RobotState& state)
 
     octomap::KeySet dirty;
     size_t fused = 0;
-    for (auto& points : batch) {
-        const retap_core::ScanResult result = model_->insertScan(points, origin, opts);
+    for (const QueuedScan& scan : batch) {
+        const retap_core::ScanResult result =
+            model_->insertScan(scan.points, scan.origin, opts);
         dirty.insert(result.occupied_keys.begin(), result.occupied_keys.end());
         ++fused;
     }
     scans_processed_.fetch_add(fused, std::memory_order_relaxed);
     if (dirty.empty()) return;
-    model_->evaluateDirty(dirty, origin);
+    model_->evaluateDirty(dirty, center);
 
     // Counters are only maintained on the stats clock: a full-tree walk per
     // cycle would scale with the map, not with the scan.  This must run even

@@ -123,9 +123,22 @@ private:
     void restageDiagnostics();
 
     // ── Online incremental path (S5) ─────────────────────────────────────
+    // One queued scan.  The ray origin is the sensor pose at the scan's own
+    // timestamp: MapRuntime hands the fuser a RobotState interpolated at
+    // header.stamp, so a scan is never inserted from a later pose.
+    struct QueuedScan {
+        std::vector<Eigen::Vector3f> points;
+        Eigen::Vector3f origin = Eigen::Vector3f::Zero();
+    };
+
     void registerOnlineMapping(finenav::core::MapRuntime& runtime);
-    void enqueueScan(const sensor_msgs::msg::PointCloud2& msg);
+    void enqueueScan(const sensor_msgs::msg::PointCloud2& msg,
+                     const Eigen::Vector3f& origin);
     void processQueuedScans(const finenav::core::RobotState& state);
+
+    // Ray-cast origin for one scan: the base_link pose shifted by
+    // origin_offset_ rotated by that pose's yaw.
+    Eigen::Vector3f sensorOrigin(const finenav::core::RobotState& state) const;
 
     // ── nearest-drivable index (ReTAP's disjoint set + ikd-tree) ─────────
     // Stored every update cycle and used as the connectivity root, so a map
@@ -181,7 +194,7 @@ private:
 
     // ── online scan queue (guarded by queue_mutex_) ──────────────────────
     mutable std::mutex queue_mutex_;
-    std::deque<std::vector<Eigen::Vector3f>> scan_queue_;
+    std::deque<QueuedScan> scan_queue_;
     std::chrono::steady_clock::time_point last_flush_{};
     std::chrono::steady_clock::time_point last_publish_{};
     bool scan_frame_warned_ = false;
