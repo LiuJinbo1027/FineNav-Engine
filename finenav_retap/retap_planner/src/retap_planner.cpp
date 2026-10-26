@@ -136,18 +136,21 @@ RetapAstarPlanner::Result RetapAstarPlanner::plan(const Context& ctx,
 
     finenav::common::Position3D start_snapped;
     finenav::common::Position3D goal_snapped;
+    // nearestDrivable() follows ReTAP: it snaps to the nearest voxel of the
+    // robot's component at any distance, so failure means the map has no
+    // drivable voxel at all (snap_radius is only a warning threshold there).
     if (!view.nearestDrivable(start, start_snapped, snap_radius_)) {
         RCLCPP_WARN(logger_,
-                    "no drivable voxel within %.2f m of the robot at "
+                    "no drivable voxel in the map for the robot at "
                     "(%.2f, %.2f, %.2f)",
-                    snap_radius_, start.x, start.y, start.z);
+                    start.x, start.y, start.z);
         return std::nullopt;
     }
     if (!view.nearestDrivable(goal, goal_snapped, snap_radius_)) {
         RCLCPP_WARN(logger_,
-                    "no drivable voxel within %.2f m of the goal at "
+                    "no drivable voxel in the map for the goal at "
                     "(%.2f, %.2f, %.2f)",
-                    snap_radius_, goal.x, goal.y, goal.z);
+                    goal.x, goal.y, goal.z);
         return std::nullopt;
     }
 

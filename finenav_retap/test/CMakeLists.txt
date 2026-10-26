@@ -11,3 +11,6 @@ target_link_libraries(test_incremental retap_core)
 
 ament_add_gtest(test_astar test_astar.cpp)
 target_link_libraries(test_astar retap_core)
+
+ament_add_gtest(test_nearest test_nearest.cpp)
+target_link_libraries(test_nearest retap_core)

@@ -47,7 +47,7 @@ retap_astar_planner:
   snap_radius:
     type: double
     default_value: 1.0
-    description: "Radius searched for the nearest drivable voxel to the robot and to the goal."
+    description: "Warning threshold for the start/goal snap. ReTAP's nearest-drivable query has no radius limit, so a farther snap is logged (throttled) and used, never rejected; set 0 to disable the warning."
 
   # ── replan throttle ─────────────────────────────────────────────────────
   # Upstream GlobalPlanning recomputed the path only when the robot had moved

@@ -81,11 +81,18 @@ public:
     // Bounding box of the loaded map, expanded by half a voxel.
     const finenav::common::Region3D& bounds() const { return bounds_; }
 
-    // Nearest occupied, collision-free voxel to q within max_radius metres.
-    // This is the in-process replacement for ReTAP's
-    // query_nearest_drivable_point service.  Unlike
-    // TerrainModel::queryNearestDrivable() it needs no disjoint-set index, so
-    // it also works on a .bt (whose connectivity flags are not serialized).
+    // Nearest drivable voxel to q, with ReTAP's query_nearest_drivable_point
+    // semantics (TerrainEvaluation::queryNearestDrivable):
+    //   1. q's own voxel is drivable and belongs to the robot's connected
+    //      component -> that voxel's centre;
+    //   2. otherwise the 3-D nearest voxel of that component.  Distance is
+    //      never a failure condition, so a 2-D goal published with z = 0 still
+    //      snaps onto the surface metres above it.
+    // max_radius > 0 is a *diagnostic* threshold only: a snap farther than it
+    // logs a throttled warning and still returns the point.
+    // Returns false only when the map holds no drivable voxel at all.
+    // Single-layer scope: the component is chosen by the robot's position, so
+    // overlapping decks would need the goal's z to disambiguate.
     bool nearestDrivable(const finenav::common::Position3D& q,
                          finenav::common::Position3D& out,
                          double max_radius) const;
@@ -119,6 +126,18 @@ private:
     void registerOnlineMapping(finenav::core::MapRuntime& runtime);
     void enqueueScan(const sensor_msgs::msg::PointCloud2& msg);
     void processQueuedScans(const finenav::core::RobotState& state);
+
+    // ── nearest-drivable index (ReTAP's disjoint set + ikd-tree) ─────────
+    // Stored every update cycle and used as the connectivity root, so a map
+    // loaded from a .bt keeps ReTAP's "root = drivable voxel nearest the
+    // robot" semantics.  Runs under the MapServer write lock.
+    void rememberRobotPose(const finenav::core::RobotState& state);
+    // One-shot build of the index from every occupied, collision-free leaf of
+    // the loaded tree.  Normally triggered by rememberRobotPose(); the query
+    // path falls back to fallback_root when planning starts first (or when no
+    // localizer feeds MapServer at all).  Returns false when the tree has no
+    // drivable voxel yet, without latching, so an online map can retry.
+    bool ensureNearestIndex(const Eigen::Vector3f& fallback_root) const;
 
     // ── configuration ────────────────────────────────────────────────────
     retap_core::TerrainConfig terrain_cfg_;
@@ -166,6 +185,15 @@ private:
     std::chrono::steady_clock::time_point last_flush_{};
     std::chrono::steady_clock::time_point last_publish_{};
     bool scan_frame_warned_ = false;
+
+    // ── nearest-drivable index state (guarded by index_mutex_) ───────────
+    // A .bt keeps the terrain attributes but not connected_voxel_, so the
+    // disjoint set and ikd-tree are empty after a load and are rebuilt here.
+    mutable std::mutex index_mutex_;
+    mutable bool nearest_index_ready_ = false;
+    mutable Eigen::Vector3f robot_position_ = Eigen::Vector3f::Zero();
+    mutable bool robot_position_valid_ = false;
+    mutable std::chrono::steady_clock::time_point last_snap_warn_{};
 
     // ── online counters (every received scan is one of processed/dropped) ─
     std::atomic<size_t> scans_received_{0};

@@ -68,6 +68,13 @@ class TerrainEvaluation {
                             octomap::point3d *result_point,
                             bool *in_disjoint_set = nullptr);
 
+  // retap_core: readiness of the nearest-drivable index (disjoint set root +
+  // ikd-tree).  queryNearestDrivable() needs both; a caller that rebuilds the
+  // index after loading a .bt uses this to skip a second build per call.
+  bool hasDrivableIndex() const {
+    return kdtree_initialized_ && drivable_disjoint_root_valid_;
+  }
+
   void resetTerrainRepresentation(std::shared_ptr<octomap::IgTree> tree);
   void terrainInit(Eigen::Isometry3d &current_pose);
 

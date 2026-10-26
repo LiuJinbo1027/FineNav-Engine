@@ -12,7 +12,7 @@ retap_world_view:
   search_margin:
     type: double
     default_value: 3.0
-    description: "Metres added around the start/goal box before intersecting it with the map bounds. Must exceed the planner's snap_radius."
+    description: "Metres added around the start/goal box (raw and snapped endpoints) before intersecting it with the map bounds. Also the warning threshold used for the snap in prepare()."
   publish_markers:
     type: bool
     default_value: true

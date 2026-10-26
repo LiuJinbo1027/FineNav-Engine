@@ -67,27 +67,29 @@ void RetapWorldView::prepare(
     const finenav::common::Position3D goal =
         toPosition(ctx.ref_traj.poses.back().position);
 
-    // The box only bounds the search; it need not contain the snapped voxels
-    // exactly, because snapping moves a point by at most the planner's
-    // snap_radius (1 m by default), and the margin (3 m by default) is larger.
+    // ReTAP's snap has no radius limit, so the snapped endpoints can lie well
+    // outside a box drawn around the request (a 2-D goal with z = 0 snaps onto
+    // a surface metres above it).  Snap here, then bound the union: the box
+    // only bounds A*, but both endpoints must fall inside it.
+    finenav::common::Position3D snapped_start = start;
+    finenav::common::Position3D snapped_goal = goal;
+    map_.nearestDrivable(start, snapped_start, search_margin_);
+    map_.nearestDrivable(goal, snapped_goal, search_margin_);
+
     finenav::common::Region3D box;
-    box.min = {std::min(start.x, goal.x) - search_margin_,
-               std::min(start.y, goal.y) - search_margin_,
-               std::min(start.z, goal.z) - search_margin_};
-    box.max = {std::max(start.x, goal.x) + search_margin_,
-               std::max(start.y, goal.y) + search_margin_,
-               std::max(start.z, goal.z) + search_margin_};
+    box.min = {std::min({start.x, goal.x, snapped_start.x, snapped_goal.x}) - search_margin_,
+               std::min({start.y, goal.y, snapped_start.y, snapped_goal.y}) - search_margin_,
+               std::min({start.z, goal.z, snapped_start.z, snapped_goal.z}) - search_margin_};
+    box.max = {std::max({start.x, goal.x, snapped_start.x, snapped_goal.x}) + search_margin_,
+               std::max({start.y, goal.y, snapped_start.y, snapped_goal.y}) + search_margin_,
+               std::max({start.z, goal.z, snapped_start.z, snapped_goal.z}) + search_margin_};
 
     region_ = intersect(box, map_.bounds());
 
     if (publish_markers_) {
         // Show what the planner will actually use, not the raw request: plan()
         // snaps both ends to the nearest drivable voxel inside this region.
-        finenav::common::Position3D marked_start = start;
-        finenav::common::Position3D marked_goal = goal;
-        map_.nearestDrivable(start, marked_start, search_margin_);
-        map_.nearestDrivable(goal, marked_goal, search_margin_);
-        publishGoalMarkers(marked_start, marked_goal);
+        publishGoalMarkers(snapped_start, snapped_goal);
     }
 }
 

@@ -148,6 +148,13 @@ void RetapTerrainMap::selfManage(finenav::core::MapRuntime& runtime) {
         }
     }
 
+    // ReTAP roots connectivity (and therefore the nearest-drivable index) at
+    // the robot, so remember the pose from the first update cycle on, whether
+    // or not online mapping is on.  Registered before the scan hook below so
+    // the index exists before that cycle's scans are folded in.
+    runtime.registerPostUpdateHook(
+        [this](const finenav::core::RobotState& state) { rememberRobotPose(state); });
+
     if (online_mapping_) registerOnlineMapping(runtime);
 }
 
@@ -252,21 +259,109 @@ void RetapTerrainMap::computeBounds() {
 bool RetapTerrainMap::nearestDrivable(const finenav::common::Position3D& q,
                                       finenav::common::Position3D& out,
                                       double max_radius) const {
-    if (model_ == nullptr || max_radius <= 0.0) return false;
-    // retap_core::nearestDrivableVoxel only walks leaves (read-only), but
-    // octomap's leaf iterators are non-const upstream, so the cast is a
-    // formality with no write behind it.
-    octomap::IgTree& tree = const_cast<octomap::IgTree&>(model_->tree());
-    Eigen::Vector3f snapped;
+    if (model_ == nullptr) return false;
+
     const Eigen::Vector3f query(static_cast<float>(q.x), static_cast<float>(q.y),
                                 static_cast<float>(q.z));
-    if (!retap_core::nearestDrivableVoxel(tree, query,
-                                          static_cast<float>(max_radius), &snapped)) {
+    // Build the disjoint set + ikd-tree on first use.  No drivable voxel yet
+    // (empty map, or online mapping before the first scan) -> no answer.
+    if (!ensureNearestIndex(query)) return false;
+
+    // queryNearestDrivable() only reads the disjoint set and the ikd-tree, and
+    // the evaluator's const-ness was not preserved by the port, hence the cast.
+    retap_core::TerrainModel& model = const_cast<retap_core::TerrainModel&>(*model_);
+    octomap::point3d snapped;
+    if (!model.evaluator().queryNearestDrivable(octomap::point3d(q.x, q.y, q.z),
+                                                &snapped)) {
         return false;
     }
-    out = {static_cast<double>(snapped.x()), static_cast<double>(snapped.y()),
-           static_cast<double>(snapped.z())};
+
+    out = {snapped.x(), snapped.y(), snapped.z()};
+
+    // max_radius is a warning threshold, not a filter: ReTAP never rejects a
+    // snap because of distance (a 2-D goal arrives with z = 0 while the
+    // surface can be metres above it).  Throttled so a periodic planner does
+    // not fill the log.
+    if (max_radius > 0.0) {
+        const double dx = out.x - q.x, dy = out.y - q.y, dz = out.z - q.z;
+        const double distance = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (distance > max_radius) {
+            const auto now = std::chrono::steady_clock::now();
+            std::lock_guard<std::mutex> lock(index_mutex_);
+            if (last_snap_warn_.time_since_epoch().count() == 0 ||
+                std::chrono::duration<double>(now - last_snap_warn_).count() >= 2.0) {
+                last_snap_warn_ = now;
+                RCLCPP_WARN(logger_,
+                            "RetapTerrainMap: snapped (%.2f, %.2f, %.2f) -> "
+                            "(%.2f, %.2f, %.2f), %.2f m away (snap_radius %.2f is a "
+                            "warning threshold only)",
+                            q.x, q.y, q.z, out.x, out.y, out.z, distance, max_radius);
+            }
+        }
+    }
     return true;
+}
+
+bool RetapTerrainMap::ensureNearestIndex(const Eigen::Vector3f& fallback_root) const {
+    std::lock_guard<std::mutex> lock(index_mutex_);
+    if (nearest_index_ready_) return true;
+    if (model_ == nullptr) return false;
+
+    retap_core::TerrainModel& model = const_cast<retap_core::TerrainModel&>(*model_);
+    // The PCD path already built the index inside evaluateAll(); rebuilding it
+    // would only duplicate ikd-tree points.
+    if (model.evaluator().hasDrivableIndex()) {
+        nearest_index_ready_ = true;
+        return true;
+    }
+
+    // A .bt load leaves the index empty, so seed it from every occupied,
+    // collision-free leaf.  The tree is only read here; the cast is the same
+    // formality as in publishDiagnostics().
+    octomap::IgTree& tree = model.tree();
+    std::vector<octomap::OcTreeKey> keys;
+    std::vector<octomap::IgTreeNode*> nodes;
+    for (auto it = tree.begin_leafs(); it != tree.end_leafs(); ++it) {
+        if (!tree.isNodeOccupied(&*it) || it->getCollision()) continue;
+        keys.push_back(it.getKey());
+        nodes.push_back(&*it);
+    }
+    if (keys.empty()) return false;  // nothing to index yet; retry later
+
+    const Eigen::Vector3f root = robot_position_valid_ ? robot_position_ : fallback_root;
+    std::vector<octomap::OcTreeKey> no_revoke_keys;
+    std::vector<octomap::IgTreeNode*> no_revoke_nodes;
+    const auto start = std::chrono::steady_clock::now();
+    // Same call ReTAP's terrain init makes on a freshly built map: root at the
+    // drivable voxel nearest the robot, 6-connected merges, and only the root
+    // component enters the ikd-tree (upstream: keep isolated roof tops out).
+    model.evaluator().updateDrivableDisjointSet(
+        keys, nodes, no_revoke_keys, no_revoke_nodes,
+        octomap::point3d(root.x(), root.y(), root.z()));
+    nearest_index_ready_ = true;
+    const double cost_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start)
+            .count();
+    RCLCPP_INFO(logger_,
+                "RetapTerrainMap: nearest-drivable index built from %zu drivable "
+                "voxels around root (%.2f, %.2f, %.2f)%s in %.0f ms",
+                keys.size(), root.x(), root.y(), root.z(),
+                robot_position_valid_ ? "" : " [query point, no robot pose yet]", cost_ms);
+    return true;
+}
+
+void RetapTerrainMap::rememberRobotPose(const finenav::core::RobotState& state) {
+    const Eigen::Vector3f position(static_cast<float>(state.pose.position.x),
+                                   static_cast<float>(state.pose.position.y),
+                                   static_cast<float>(state.pose.position.z));
+    {
+        std::lock_guard<std::mutex> lock(index_mutex_);
+        robot_position_ = position;
+        robot_position_valid_ = true;
+    }
+    // One-shot: the index is built on the first cycle that has a pose, so its
+    // root is the robot rather than a query point.  A no-op afterwards.
+    ensureNearestIndex(position);
 }
 
 // ── diagnostics ────────────────────────────────────────────────────────────
