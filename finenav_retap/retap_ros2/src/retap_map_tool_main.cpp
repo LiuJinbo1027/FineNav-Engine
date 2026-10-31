@@ -27,6 +27,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "retap_core/astar_3d/astar_3d.h"
@@ -57,6 +58,7 @@ void usage() {
          "                         [--config <terrain.yaml>] [--output-dir DIR]\n"
          "                         [--center x,y,z]\n"
          "  retap_map_tool info    --bt <map_terrain.bt>\n"
+         "                         [--trajectory poses.txt] [--histogram]\n"
          "  retap_map_tool plan    --bt <map_terrain.bt>\n"
          "                         --start x,y,z --goal x,y,z\n"
          "                         [--heuristic-weight 0.5]\n"
@@ -64,8 +66,18 @@ void usage() {
          "                         [--snap-radius 1.0] [--path-pcd out.pcd]\n"
          "\n"
          "analyze writes <stem>_terrain.bt, <stem>_{slope,roughness,\n"
-         "sparsity,traversability,collision,drivable}.pcd and\n"
-         "<stem>_stats.json into --output-dir (default ./retap_<stem>).\n";
+         "sparsity,traversability,collision,drivable,connected}.pcd and\n"
+         "<stem>_stats.json into --output-dir (default ./retap_<stem>).\n"
+         "`drivable` is 1 - collision; `connected` is 6-connectivity to the\n"
+         "insertion point, which is a different (and much smaller) set.\n"
+         "\n"
+         "info --trajectory scores a recorded pose track (one `x y z` per\n"
+         "line, `#` comments allowed) against the map: for every distinct\n"
+         "voxel a pose falls in, the first occupied voxel down its column is\n"
+         "the surface, and the surface's collision flag decides.  This is the\n"
+         "metric the config/ experiments are compared with.\n"
+         "info --histogram prints how many points the occupied voxels hold,\n"
+         "which is what points_number_threshold / min_voxel_points act on.\n";
 }
 
 Args parseArgs(int argc, char **argv) {
@@ -176,6 +188,9 @@ bool writeStatsJson(const std::filesystem::path &path,
     << ",\n";
   f << "    \"collision_neighbor\": "
     << static_cast<int>(cfg.collision_neighbor) << ",\n";
+  f << "    \"clearance_voxels\": " << cfg.clearance_voxels << ",\n";
+  f << "    \"support_voxels\": " << cfg.support_voxels << ",\n";
+  f << "    \"min_voxel_points\": " << cfg.min_voxel_points << ",\n";
   f << "    \"frame_height\": " << cfg.frame_height << ",\n";
   f << "    \"filling_radius\": " << cfg.filling_radius << ",\n";
   f << "    \"update_free\": " << cfg.update_free << "\n";
@@ -284,7 +299,11 @@ int runAnalyze(const Args &args) {
       {retap_core::VoxelField::kSparsity, "_sparsity.pcd"},
       {retap_core::VoxelField::kTraversability, "_traversability.pcd"},
       {retap_core::VoxelField::kCollision, "_collision.pcd"},
-      {retap_core::VoxelField::kConnected, "_drivable.pcd"},
+      // `_drivable` used to carry the connected flag -- a different question
+      // ("same 6-connected component as the robot") answered with a number
+      // under a name that says "drivable".  They are now separate files.
+      {retap_core::VoxelField::kDrivable, "_drivable.pcd"},
+      {retap_core::VoxelField::kConnected, "_connected.pcd"},
   };
   for (const auto &field : fields) {
     const std::filesystem::path path = out_dir / (stem + field.suffix);
@@ -326,6 +345,157 @@ int runAnalyze(const Args &args) {
   return exit_code;
 }
 
+// ── trajectory scoring and point-count histogram (analysis aids) ───────────
+//
+// RetAP has no notion of "is this recorded path passable", but the config/
+// experiments are compared with exactly that number, so it lives here where
+// it uses the same tree, the same keys and the same collision flag as the
+// planner does.
+
+struct TrajectoryReport {
+  size_t poses = 0;         // lines read
+  size_t cells = 0;         // distinct voxels the poses fall in
+  size_t with_surface = 0;  // cells with an occupied voxel in the column
+  size_t drivable = 0;      // ... whose surface is collision-free
+  size_t connected = 0;     // ... of those, connected to the root
+  size_t blocked = 0;       // ... whose surface is a collision
+  size_t no_surface = 0;    // nothing occupied above/below the pose
+};
+
+bool readTrajectory(const std::string &path, std::vector<Eigen::Vector3f> *out,
+                    std::string *error) {
+  std::ifstream f(path);
+  if (!f.is_open()) {
+    if (error) *error = "cannot open " + path;
+    return false;
+  }
+  std::string line;
+  int line_no = 0;
+  while (std::getline(f, line)) {
+    ++line_no;
+    const auto hash = line.find('#');
+    if (hash != std::string::npos) line = line.substr(0, hash);
+    std::istringstream ss(line);
+    Eigen::Vector3f p;
+    if (!(ss >> p.x() >> p.y() >> p.z())) continue;  // blank or incomplete
+    (void)line_no;
+    out->push_back(p);
+  }
+  if (out->empty()) {
+    if (error) *error = path + " holds no `x y z` line";
+    return false;
+  }
+  return true;
+}
+
+// The surface of a pose is the first occupied voxel found scanning down its
+// column from 0.2 m above the pose to --column-depth metres below it.  The
+// lidar sits above the floor and cannot see straight down, so a pose whose
+// column is empty is reported as no_surface rather than as blocked.
+TrajectoryReport scoreTrajectory(octomap::IgTree &tree,
+                                 const std::vector<Eigen::Vector3f> &poses,
+                                 double column_depth_m = 0.6) {
+  const double res = tree.getResolution();
+  const int up = static_cast<int>(std::ceil(0.2 / res));
+  const int down = static_cast<int>(std::ceil(column_depth_m / res));
+  std::unordered_set<octomap::OcTreeKey, octomap::OcTreeKey::KeyHash> seen;
+
+  TrajectoryReport report;
+  report.poses = poses.size();
+  for (const auto &p : poses) {
+    octomap::OcTreeKey key;
+    if (!tree.coordToKeyChecked(octomap::point3d(p.x(), p.y(), p.z()), key))
+      continue;
+    if (!seen.insert(key).second) continue;
+    report.cells++;
+
+    octomap::IgTreeNode *surface = nullptr;
+    for (int dz = up; dz >= -down && !surface; --dz) {
+      // OcTreeKey::k is uint16_t (the tree's max key is 65535), so the guard
+      // must be against that range, not against 32767.
+      const int z = static_cast<int>(key.k[2]) + dz;
+      if (z < 0 || z > 65535) continue;
+      octomap::OcTreeKey k = key;
+      k.k[2] = static_cast<octomap::key_type>(z);
+      octomap::IgTreeNode *node = tree.search(k);
+      if (node && tree.isNodeOccupied(node)) surface = node;
+    }
+    if (!surface) {
+      report.no_surface++;
+    } else if (surface->getCollision()) {
+      report.with_surface++;
+      report.blocked++;
+    } else {
+      report.with_surface++;
+      report.drivable++;
+      if (surface->getConnected()) report.connected++;
+    }
+  }
+  return report;
+}
+
+void printTrajectoryReport(const TrajectoryReport &r, double resolution) {
+  const auto pct = [](size_t a, size_t b) {
+    return b == 0 ? 0.0 : 100.0 * static_cast<double>(a) /
+                               static_cast<double>(b);
+  };
+  std::cout << std::fixed << std::setprecision(2);
+  std::cout << "  trajectory: " << r.poses << " poses -> " << r.cells
+            << " voxels (res " << resolution << " m)\n";
+  std::cout << "    surface found " << r.with_surface << " ("
+            << pct(r.with_surface, r.cells) << "%), none " << r.no_surface
+            << " (" << pct(r.no_surface, r.cells) << "%)\n";
+  std::cout << "    passable " << r.drivable << " ("
+            << pct(r.drivable, r.with_surface) << "% of judged, "
+            << pct(r.drivable, r.cells) << "% of all)  blocked " << r.blocked
+            << "  connected-passable " << r.connected << "\n";
+}
+
+void printPointHistogram(octomap::IgTree &tree) {
+  // Buckets of IgTreeNode::pointCount() over occupied voxels.  The NDT
+  // statistics (and therefore slope / roughness / sparsity) are only
+  // meaningful in the upper buckets, which is why this is printed next to
+  // points_number_threshold and min_voxel_points.
+  const int bounds[] = {1, 2, 5, 10, 19};  // upper bounds of the first buckets
+  // 0 (never used: zeros are counted separately), <=1, <=2, <=5, <=10, <=19,
+  // >19.  The last bucket must exist on its own: merging it into <=19 made
+  // the line print both "<=19 100%" and ">=20 x%" from the same counter.
+  size_t counts[7] = {0, 0, 0, 0, 0, 0, 0};
+  size_t zeros = 0;
+  size_t total = 0;
+  for (auto it = tree.begin_leafs(); it != tree.end_leafs(); ++it) {
+    if (!tree.isNodeOccupied(&*it)) continue;
+    const int n = it->pointCount();
+    total++;
+    if (n <= 0) {
+      zeros++;
+      continue;
+    }
+    int bucket = 6;
+    for (int b = 0; b < 5; ++b) {
+      if (n <= bounds[b]) {
+        bucket = b + 1;
+        break;
+      }
+    }
+    counts[bucket]++;
+  }
+  const auto pct = [total](size_t a) {
+    return total == 0 ? 0.0 : 100.0 * static_cast<double>(a) /
+                                   static_cast<double>(total);
+  };
+  std::cout << std::fixed << std::setprecision(1);
+  std::cout << "  points/voxel over " << total << " occupied voxels:\n"
+            << "    =1 " << pct(counts[1]) << "%  <=2 " << pct(counts[1] + counts[2])
+            << "%  <=5 " << pct(counts[1] + counts[2] + counts[3])
+            << "%  <=10 " << pct(counts[1] + counts[2] + counts[3] + counts[4])
+            << "%  <=19 "
+            << pct(counts[1] + counts[2] + counts[3] + counts[4] + counts[5])
+            << "%  >19 " << pct(counts[6]) << "%";
+  if (zeros) std::cout << "  (with 0 points: " << zeros << ")";
+  std::cout << "\n";
+}
+
 int runInfo(const Args &args) {
   const std::string bt_path = args.get("bt");
   if (bt_path.empty()) {
@@ -351,6 +521,17 @@ int runInfo(const Args &args) {
             << min_x << ", " << min_y << ", " << min_z << "] max [" << max_x
             << ", " << max_y << ", " << max_z << "]\n";
   printStats(stats);
+
+  if (args.has("histogram")) printPointHistogram(*tree);
+
+  if (args.has("trajectory")) {
+    std::vector<Eigen::Vector3f> poses;
+    if (!readTrajectory(args.get("trajectory"), &poses, &error)) {
+      std::cerr << "info: " << error << "\n";
+      return 1;
+    }
+    printTrajectoryReport(scoreTrajectory(*tree, poses), tree->getResolution());
+  }
   return 0;
 }
 

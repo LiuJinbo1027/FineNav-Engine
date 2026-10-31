@@ -90,7 +90,22 @@ retap_terrain_map:
     type: int
     default_value: 17
     read_only: true
-    description: "Collision neighbour ring: 9, 17 or 25. 17 is ReTAP's default and the value S1 calibrated with."
+    description: "Horizontal ring of the neighbour test: 1 + 8*R (center plus R Chebyshev shells). 9 = 3x3 voxels (0.30 m half-span at 0.20 m), 17 = 5x5 (upstream default), 25 = 7x7, 49 = 13x13 (0.325 m at 0.05 m). The ring must cover the robot footprint: (2R+1)*resolution >= robot width."
+  clearance_voxels:
+    type: int
+    default_value: 3
+    read_only: true
+    description: "Layers scanned upward by checkNeighborCells. The top layer (z = +clearance_voxels) is a hard obstruction; z = 1..clearance-1 only need to pass the terrain constraints. 3 is upstream; a 0.60 m robot needs ceil(0.60/resolution)."
+  support_voxels:
+    type: int
+    default_value: 3
+    read_only: true
+    description: "Layers scanned downward. Downward reach is 4 voxels counted from the voxel itself (z = 0, -1, -2, -3): ring 1 at z = -2 and ring 2+ at z = -3 must be occupied or the voxel is a cliff. 3 is upstream."
+  min_voxel_points:
+    type: int
+    default_value: 0
+    read_only: true
+    description: "Evidence threshold N: inside checkNeighborCells a voxel counts as occupied only once it holds at least N points. 0 = disabled (any point occupies, upstream semantics). Not used by checkNodeConstraints."
   frame_height:
     type: double
     default_value: 0.5
@@ -128,11 +143,11 @@ retap_terrain_map:
   scan_topic:
     type: string
     default_value: "/cloud_registered"
-    description: "PointCloud2 topic, already expressed in the map frame."
+    description: "PointCloud2 topic, in the map frame when scan_in_map_frame is true, otherwise in base_link."
   scan_in_map_frame:
     type: bool
     default_value: true
-    description: "If false, scans are dropped (TF lookup is not wired in this build)."
+    description: "If false, the cloud is taken as base_link and rotated/translated into the map frame with the localizer pose at the scan stamp (no TF lookup)."
   update_free:
     type: int
     default_value: 0

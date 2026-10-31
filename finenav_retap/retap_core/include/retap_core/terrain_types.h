@@ -19,8 +19,23 @@ struct TerrainConfig {
   float traversability_weight = 2.3;
   int points_number_threshold = 20;
   float traversability_threshold = 0.7;
-  // 9 / 17 / 25, see TerrainEvaluation::checkNeighborCells.
+  // Horizontal ring of the neighbour test: 1 + 8 * R offsets, i.e. a
+  // (2R+1) x (2R+1) block centred on the voxel.  9 = 3x3 (R=1), 17 = 5x5
+  // (R=2, upstream default), 25 = 7x7 (R=3), 49 = 13x13 (R=6, what a 0.60 m
+  // footprint needs at 0.05 m).  See TerrainEvaluation::checkNeighborCells().
   float collision_neighbor = 17;
+  // Vertical scan of the neighbour test: z = +1 .. +clearance_voxels upward and
+  // z = 0 .. -support_voxels downward.
+  //   z == +clearance_voxels  : occupied => hard obstruction (净空)
+  //   z == 1 .. clearance-1   : occupied => must pass checkNodeConstraints
+  //   z == -2 / -3            : must be occupied (support / cliff test)
+  // 3 / 3 reproduces upstream exactly.  At 0.2 m a 60 cm robot needs 4.
+  int clearance_voxels = 3;
+  int support_voxels = 3;
+  // Evidence threshold N: a voxel counts as occupied for the neighbour test
+  // only once it holds at least N points.  0 = disabled (any point occupies,
+  // upstream semantics).
+  int min_voxel_points = 0;
   float frame_height = 0.5;
   float filling_radius = 0.5;
 

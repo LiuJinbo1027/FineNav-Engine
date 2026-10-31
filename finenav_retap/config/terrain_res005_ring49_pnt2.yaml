@@ -1,0 +1,43 @@
+# ==============================================================================
+#  res 0.05 + ring 49 + points_number_threshold=2：把"密度"这一项按分辨率重标定
+# ==============================================================================
+#  这不是 N（min_voxel_points），而是 sparsity 公式里的分母 N_th：
+#
+#      density = mean_j min(cnt_j, N_th) / N_th
+#      sparsity = 1 - density
+#
+#  N_th 的物理含义是"一个体素算作稠密的点数"，它应当与该体素的面积成正比：
+#    0.20 m 体素：20 点 = 500 点/m²
+#    0.05 m 体素：500 × 0.05² = 1.25 点 → N_th = 2
+#  也就是说，res 0.20 的 20 和 res 0.05 的 2 是**同一个物理密度要求**。
+#  沿用 20 相当于要求 8000 点/m²，0.05 m 下必然把整张地图判成稀疏。
+#
+#  这一组用来检验"可通行体素骤降是因为点云密度不够"这个解释：
+#    · 若 N_th=2 后可通行体素回到 res 0.20 的水平 → 降幅来自**标定没有跟着
+#      分辨率走**，不是点云不够密；
+#    · 若仍显著偏低           → 才是密度真的不够（雷达在 5 cm 体素里给不出
+#      足够的返回）。
+#
+#  同族实验（与 min_voxel_points 正交，可以叠加）：
+#    terrain_res005_ring49_n3.yaml / _n5.yaml / _sparsity_off.yaml
+# ==============================================================================
+retap_terrain:
+  resolution: 0.05
+
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  points_number_threshold: 2      # 20 × (0.05/0.20)² = 1.25 → 2（且不能取 0）
+  collision_neighbor: 49
+  clearance_voxels: 13
+  support_voxels: 3
+  min_voxel_points: 0
+  frame_height: 0.5
+  filling_radius: 0.5

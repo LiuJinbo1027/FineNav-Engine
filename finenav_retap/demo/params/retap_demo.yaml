@@ -25,29 +25,14 @@
     update_rate_hz: 2.0
 
     retap_terrain_map:
-      # ── static prior ─────────────────────────────────────────────────────
-      # Produced by S1:
-      #   ros2 run finenav_retap retap_map_tool analyze \
-      #     --pcd .../desert.pcd --resolution 0.2 \
-      #     --config .../retap_ros2/config/terrain_sim.yaml \
-      #     --output-dir /tmp/retap_desert
+      # ── what this scenario is (no calibration here) ──────────────────────
+      # resolution, thresholds/weights, collision_neighbor and the NDT
+      # neighbour fields come from config/<terrain>.yaml, merged in by the
+      # launch (`terrain_config:=`, default config/terrain_sim.yaml).  The
+      # same numbers therefore also feed `retap_map_tool analyze --config`
+      # for the prior map below, instead of being typed twice.
       map_format: bt
       map_path: /tmp/retap_desert/desert_terrain.bt
-      resolution: 0.2
-
-      # ── terrain analysis: slugcat calibration, same as terrain_sim.yaml ──
-      slope_threshold: 0.65
-      roughness_threshold: 0.50
-      sparsity_threshold: 0.70
-      traversability_threshold: 0.805
-      slope_weight: 0.5
-      roughness_weight: 0.3
-      sparsity_weight: 0.2
-      traversability_weight: 2.3
-      points_number_threshold: 20
-      collision_neighbor: 17
-      frame_height: 0.5
-      filling_radius: 0.5
 
       # ── diagnostics (/retap/map/{traversability,collision,drivable}) ─────
       publish_diagnostics: true

@@ -30,14 +30,15 @@
 
 import os
 import subprocess
+import sys
 
-import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     IncludeLaunchDescription,
+    LogInfo,
     OpaqueFunction,
     TimerAction,
 )
@@ -46,57 +47,75 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from retap_params import (merge_params, read_param, resolve_config,  # noqa: E402
+                          summary)
+
 # Where the parameter file keeps the terrain map path.
 MAP_PARAM_PATH = ("/retap_demo/retap_terrain_map", "ros__parameters",
                   "retap_terrain_map", "map_path")
 
 
-def _ensure_prior_map(context, params_file, model_dir, prior_pcd,
-                      terrain_config, offset_z, spacing):
+def _ensure_prior_map(params_path, model_dir, prior_pcd, terrain_config,
+                      offset_z, spacing):
     """Export the Gazebo terrain and analyse it when the .bt is missing.
 
     Two steps, both offline: the mesh -> world-frame .pcd (with the SDF scale
     and the 0.75 m base_origin/base_link shift), then .pcd -> terrain .bt.
     """
-    params_path = params_file.perform(context)
-    try:
-        with open(params_path, "r", encoding="utf-8") as handle:
-            entry = yaml.safe_load(handle) or {}
-        for key in MAP_PARAM_PATH:
-            entry = entry[key]
-    except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
-        print(f"[retap_s5] cannot read map_path from '{params_path}': {exc}")
-        return []
-
+    entry = read_param(params_path, *MAP_PARAM_PATH)
     if not entry or os.path.exists(entry):
-        return []
+        return
 
     out_dir = os.path.dirname(entry)
     os.makedirs(out_dir, exist_ok=True)
-    pcd = prior_pcd.perform(context)
     export = [
         "ros2", "run", "finenav_retap", "export_gazebo_pcd",
-        "--model", model_dir.perform(context),
-        "--output", pcd,
-        "--spacing", spacing.perform(context),
-        "--offset-z", offset_z.perform(context),
+        "--model", model_dir,
+        "--output", prior_pcd,
+        "--spacing", spacing,
+        "--offset-z", offset_z,
     ]
     print(f"[retap_s5] prior map missing; {' '.join(export)}")
     if subprocess.run(export, check=False).returncode != 0:
         print("[retap_s5] terrain export failed.")
-        return []
+        return
 
     analyze = [
         "ros2", "run", "finenav_retap", "retap_map_tool", "analyze",
-        "--pcd", pcd,
+        "--pcd", prior_pcd,
         "--resolution", "0.2",
-        "--config", terrain_config.perform(context),
+        "--config", terrain_config,
         "--output-dir", out_dir,
     ]
     print(f"[retap_s5] {' '.join(analyze)}")
     if subprocess.run(analyze, check=False).returncode != 0:
         print("[retap_s5] terrain analysis failed.")
-    return []
+
+
+def _start_demo(context, params_file, model_dir, prior_pcd, terrain_config,
+                offset_z, spacing):
+    params_path = params_file.perform(context)
+    config_path = resolve_config(
+        get_package_share_directory("finenav_retap"),
+        terrain_config.perform(context))
+
+    _ensure_prior_map(params_path, model_dir.perform(context),
+                      prior_pcd.perform(context), config_path,
+                      offset_z.perform(context), spacing.perform(context))
+
+    merged_path, terrain = merge_params(params_path, config_path)
+    # No `name=` on purpose: launch_ros would pass a process-wide
+    # `__node:=<name>` remap and rename every node the process creates,
+    # including the MapServer/ControlLayer private nodes whose fully-qualified
+    # names are the keys of the parameter file.
+    demo = Node(
+        package="finenav_retap",
+        executable="retap_demo",
+        output="screen",
+        parameters=[merged_path],
+    )
+    return [LogInfo(msg=summary(config_path, terrain, merged_path)), demo]
 
 
 def generate_launch_description():
@@ -180,12 +199,10 @@ def generate_launch_description():
     # `__node:=<name>` remap and rename every node the process creates,
     # including the MapServer/ControlLayer private nodes whose fully-qualified
     # names are the keys of the parameter file.
-    demo = Node(
-        package="finenav_retap",
-        executable="retap_demo",
-        output="screen",
-        parameters=[params_file],
-    )
+    demo = OpaqueFunction(
+        function=_start_demo,
+        args=[params_file, model_dir, prior_pcd, terrain_config,
+              prior_offset_z, prior_spacing])
 
     delayed_start = TimerAction(
         period=startup_delay,
@@ -205,7 +222,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "params_file", default_value=default_params,
-            description="Parameter file for retap_demo (S5 online mapping)."),
+            description="Scenario parameter file for retap_demo (S5 online "
+                        "mapping; the calibration is not in it)."),
         DeclareLaunchArgument(
             "world_name", default_value="map_desert.world",
             description="World under finenav_simulator/resource/worlds."),
@@ -226,7 +244,8 @@ def generate_launch_description():
             description="Where the exported world-frame cloud is written."),
         DeclareLaunchArgument(
             "terrain_config", default_value=default_terrain_config,
-            description="Terrain thresholds used to analyse that cloud."),
+            description="Terrain calibration for the prior map AND for the demo "
+                        "run itself (merged into params_file)."),
         DeclareLaunchArgument(
             "prior_offset_z", default_value="0.75",
             description="z shift from the Gazebo world to `map` (base_origin vs base_link)."),
@@ -234,10 +253,6 @@ def generate_launch_description():
             "prior_spacing", default_value="0.04",
             description="Mesh sampling distance for the prior cloud (m)."),
 
-        OpaqueFunction(
-            function=_ensure_prior_map,
-            args=[params_file, model_dir, prior_pcd, terrain_config,
-                  prior_offset_z, prior_spacing]),
         simulator,
         delayed_start,
         rviz_node,

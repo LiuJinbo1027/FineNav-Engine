@@ -1,0 +1,33 @@
+# ==============================================================================
+#  res 0.05 + ring 49 + N=3：证据阈值的第一档
+# ==============================================================================
+#  与 terrain_res005_ring49.yaml 完全相同，只把 min_voxel_points 设成 3：
+#  点数 < 3 的体素既不算占据也不算支撑，灰尘不再能制造假碰撞。
+#
+#  为什么是 3：同一份点云在 res 0.05 下单点体素占 50.8%、≤2 点占 65.0%。
+#  N=3 正好把"1~2 个孤立返回"整体剔除，同时保住 3 点以上（真实表面在小体素
+#  里连续命中）的支撑资格。
+#
+#  实验口径见 config/README.md「分辨率阶梯」一节；launch 复现：
+#    ros2 launch finenav_retap retap_rosbag.launch.py config:=terrain_res005_ring49_n3.yaml
+# ==============================================================================
+retap_terrain:
+  resolution: 0.05
+
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  points_number_threshold: 20
+  collision_neighbor: 49          # R=6 → 13×13 体素 = 0.65 m
+  clearance_voxels: 13            # 0.60/0.05 = 12 层机体 + 1 层硬顶
+  support_voxels: 3
+  min_voxel_points: 3             # N = 3（点数 < 3 视为 free/unknown）
+  frame_height: 0.5
+  filling_radius: 0.5

@@ -31,5 +31,7 @@ retap_terrain:
   frame_height: 0.5
   filling_radius: 0.5
 
-  # static PCD: no ray-carved free space; online lidar: 2
-  update_free: 0
+# update_free / terrain_update_* are NOT here: they describe the data source
+# (static PCD vs online lidar) and live in the scenario parameter file under
+# demo/params/.  `retap_map_tool analyze` keeps the TerrainConfig default
+# (update_free 0 = no ray-carved free space), which is the static-PCD case.

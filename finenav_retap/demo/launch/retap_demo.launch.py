@@ -12,14 +12,19 @@
 
 import os
 import subprocess
+import sys
 
-import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, ExecuteProcess, OpaqueFunction
+from launch.actions import (DeclareLaunchArgument, ExecuteProcess, LogInfo,
+                            OpaqueFunction)
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from retap_params import (merge_params, read_param, resolve_config,  # noqa: E402
+                          summary)
 
 FAKE_POSE_MSG = (
     "{header: {frame_id: map}, "
@@ -32,40 +37,55 @@ MAP_PARAM_PATH = ("/retap_demo/retap_terrain_map", "ros__parameters",
                   "retap_terrain_map", "map_path")
 
 
-def _ensure_prior_map(context, params_file, prior_pcd, terrain_config):
+def _ensure_prior_map(params_path, prior_pcd, terrain_config):
     """Rebuild the terrain .bt when the parameter file points at a missing one.
 
     The demo's map_path is the S1 output under /tmp, which does not survive a
     reboot.  A missing file only surfaces as an ERROR line followed by "no
     drivable voxel", so build it again here instead.
     """
-    params_path = params_file.perform(context)
-    try:
-        with open(params_path, "r", encoding="utf-8") as handle:
-            entry = yaml.safe_load(handle) or {}
-        for key in MAP_PARAM_PATH:
-            entry = entry[key]
-    except (OSError, KeyError, TypeError, yaml.YAMLError) as exc:
-        print(f"[retap_demo] cannot read map_path from '{params_path}': {exc}")
-        return []
-
+    entry = read_param(params_path, *MAP_PARAM_PATH)
     if not entry or os.path.exists(entry):
-        return []
+        return
 
     out_dir = os.path.dirname(entry)
     os.makedirs(out_dir, exist_ok=True)
     cmd = [
         "ros2", "run", "finenav_retap", "retap_map_tool", "analyze",
-        "--pcd", prior_pcd.perform(context),
+        "--pcd", prior_pcd,
         "--resolution", "0.2",
-        "--config", terrain_config.perform(context),
+        "--config", terrain_config,
         "--output-dir", out_dir,
     ]
     print(f"[retap_demo] map '{entry}' missing; generating: {' '.join(cmd)}")
     result = subprocess.run(cmd, check=False)
     if result.returncode != 0:
         print(f"[retap_demo] map generation failed (exit {result.returncode}).")
-    return []
+
+
+def _start_demo(context, params_file, prior_pcd, terrain_config):
+    params_path = params_file.perform(context)
+    pcd = prior_pcd.perform(context)
+    config_path = resolve_config(
+        get_package_share_directory("finenav_retap"),
+        terrain_config.perform(context))
+
+    _ensure_prior_map(params_path, pcd, config_path)
+
+    merged_path, terrain = merge_params(params_path, config_path)
+    # No `name=` on purpose: launch_ros would pass a process-wide
+    # `__node:=<name>` remap, which renames EVERY node the process creates --
+    # including the MapServer/ControlLayer private nodes
+    # (<engine>/retap_terrain_map, <engine>/retap_layer).  The parameter file
+    # keys are their fully-qualified names, so renaming them silently drops
+    # the whole YAML.  Let the executable name its own nodes.
+    demo = Node(
+        package="finenav_retap",
+        executable="retap_demo",
+        output="screen",
+        parameters=[merged_path],
+    )
+    return [LogInfo(msg=summary(config_path, terrain, merged_path)), demo]
 
 
 def generate_launch_description():
@@ -85,13 +105,15 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             "params_file", default_value=default_params,
-            description="Parameter file for retap_demo (map_path lives here)."),
+            description="Scenario parameter file for retap_demo (map_path lives "
+                        "here; the calibration does not)."),
         DeclareLaunchArgument(
             "prior_pcd", default_value=default_prior_pcd,
             description="Point cloud the map is rebuilt from when map_path is missing."),
         DeclareLaunchArgument(
             "terrain_config", default_value=default_terrain_config,
-            description="Terrain thresholds used for that rebuild."),
+            description="Terrain calibration for the rebuild AND for the demo "
+                        "run itself (merged into params_file)."),
         DeclareLaunchArgument(
             "fake_pose", default_value="true",
             description="Publish a constant pose on /fake_pose (phase 1 localizer)."),
@@ -100,7 +122,7 @@ def generate_launch_description():
             description="Start RViz2 with demo/rviz/retap_s4.rviz."),
 
         OpaqueFunction(
-            function=_ensure_prior_map,
+            function=_start_demo,
             args=[params_file, prior_pcd, terrain_config]),
 
         ExecuteProcess(
@@ -108,19 +130,6 @@ def generate_launch_description():
                  "geometry_msgs/msg/PoseWithCovarianceStamped", FAKE_POSE_MSG],
             output="log",
             condition=IfCondition(fake_pose),
-        ),
-
-        # No `name=` on purpose: launch_ros would pass a process-wide
-        # `__node:=<name>` remap, which renames EVERY node the process creates —
-        # including the MapServer/ControlLayer private nodes
-        # (<engine>/retap_terrain_map, <engine>/retap_layer).  The parameter file
-        # keys are their fully-qualified names, so renaming them silently drops
-        # the whole YAML.  Let the executable name its own nodes.
-        Node(
-            package="finenav_retap",
-            executable="retap_demo",
-            output="screen",
-            parameters=[params_file],
         ),
 
         Node(

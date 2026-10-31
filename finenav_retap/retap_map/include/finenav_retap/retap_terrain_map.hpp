@@ -133,7 +133,7 @@ private:
 
     void registerOnlineMapping(finenav::core::MapRuntime& runtime);
     void enqueueScan(const sensor_msgs::msg::PointCloud2& msg,
-                     const Eigen::Vector3f& origin);
+                     const finenav::core::RobotState& state);
     void processQueuedScans(const finenav::core::RobotState& state);
 
     // Ray-cast origin for one scan: the base_link pose shifted by
@@ -162,6 +162,9 @@ private:
     double diagnostics_period_sec_ = 1.0;
     bool online_mapping_ = false;
     std::string scan_topic_ = "/cloud_registered";
+    // true: the cloud is already in `map`.  false: it is in base_link and is
+    // rotated/translated by the RobotState pose at the scan's own stamp (no TF
+    // lookup — in a replay the transform for that stamp is not published yet).
     bool scan_in_map_frame_ = true;
     int update_free_ = 0;
     double max_range_ = 10.0;
@@ -216,6 +219,20 @@ private:
     // diagnostics republish thread cannot starve them.
     std::chrono::steady_clock::time_point last_stats_tick_{};
     std::chrono::steady_clock::time_point last_stats_log_{};
+
+    // ── per-scan cost (online path, written under the map write lock) ─────
+    // insert+evaluate wall time and the scans it covered: the "average
+    // processing time per cloud" the experiment table reports.  Measuring the
+    // whole batch is deliberate -- scanning a whole cloud without analysing
+    // its voxels is not a comparable unit of work.
+    double analysis_ms_total_ = 0.0;
+    size_t analysis_scans_ = 0;
+    // Last counters, so the shutdown line can print them without another
+    // full-tree walk (model_ may already be gone by then).
+    size_t final_occupied_ = 0;
+    size_t final_drivable_ = 0;
+    double final_analysis_ms_ = 0.0;
+    size_t final_analysis_scans_ = 0;
 
     rclcpp::Logger logger_{rclcpp::get_logger("RetapTerrainMap")};
     finenav::viz::FineNavVisualizer viz_;

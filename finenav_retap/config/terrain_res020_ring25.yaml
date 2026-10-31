@@ -1,0 +1,30 @@
+# ==============================================================================
+#  res 0.20 + ring 25：反向对照，用来看"膨胀过大"的上界
+# ==============================================================================
+#  水平：ring 25 → 外沿 3.5 × 0.2 = 0.70 m，比 0.30 m 半宽多 0.40 m 余量
+#  竖直：0.60 m（不变）
+#
+#  实测：轨迹格可通行 7/90 = 8%，地板上表面列 20/1655 = 1.2%。
+#  用途：和 ring 9 / ring 17 一起确认"轨迹覆盖率对水平半跨单调敏感"，
+#        从而把分辨率这个变量排除掉。不适合实际使用。
+# ==============================================================================
+retap_terrain:
+  resolution: 0.2
+
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  points_number_threshold: 20
+  collision_neighbor: 25
+  clearance_voxels: 4             # z=+4 有占据即碰撞；z=1..3 只查地形约束
+  support_voxels: 3               # 向下 z=0..-3 共 4 层
+  min_voxel_points: 0             # N（证据阈值）：0 = 不启用
+  frame_height: 0.5
+  filling_radius: 0.5

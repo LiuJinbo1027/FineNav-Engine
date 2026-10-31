@@ -9,13 +9,26 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
+#include <array>
 #include <chrono>
 #include <iostream>
 #include <unordered_set>
+
+namespace {
+// retap_core: upper bound of the horizontal ring, so checkNeighborCells can
+// keep its visited-offset flags on the stack.  128 -> R <= 15 (3.1 m half-span
+// at 0.20 m).  Upstream's bool flag[64] capped R at 7.
+constexpr int kMaxNeighborCells = 128;
+constexpr int kMaxNeighborRadius = (kMaxNeighborCells - 1) / 8;
+}  // namespace
+
 namespace mapping_module {
 
 TerrainEvaluation::TerrainEvaluation(std::shared_ptr<octomap::IgTree> tree) {
   resetTerrainRepresentation(tree);
+  // The defaults are upstream's (ring 17 -> radius 2, z in [-3, +3]), so the
+  // evaluator is usable before configure() is called.
+  rebuildNeighborOffsets();
 }
 
 TerrainEvaluation::~TerrainEvaluation() {}
@@ -39,6 +52,48 @@ void TerrainEvaluation::configure(const retap_core::TerrainConfig &cfg) {
   points_number_threshold_ = cfg.points_number_threshold;
   frame_height_ = cfg.frame_height;
   filling_radius_ = cfg.filling_radius;
+  clearance_voxels_ = cfg.clearance_voxels < 1 ? 1 : cfg.clearance_voxels;
+  support_voxels_ = cfg.support_voxels < 0 ? 0 : cfg.support_voxels;
+  min_voxel_points_ = cfg.min_voxel_points < 0 ? 0 : cfg.min_voxel_points;
+  rebuildNeighborOffsets();
+}
+
+// retap_core: upstream kept the neighbour offsets in the static index_x /
+// index_y tables inside checkNeighborCells (25 entries = center + 3 shells).
+// The tables are generated here instead so the radius can follow the
+// resolution: a 0.60 m footprint needs ring 1 at 0.20 m, ring 6 at 0.05 m.
+// Entry 0 is the voxel itself; shell r contributes
+//   (0,r), (0,-r), (r,0), (-r,0), (r,r), (r,-r), (-r,r), (-r,-r)
+// which for r = 1..3 is exactly the upstream table.
+void TerrainEvaluation::rebuildNeighborOffsets() {
+  int radius = neighborRadius();
+  if (radius > kMaxNeighborRadius) {
+    std::cerr << "<checkNeighborCells>: collision_neighbor_="
+              << collision_neighbor_ << " is above the supported ring "
+              << (1 + 8 * kMaxNeighborRadius) << "; clamping." << std::endl;
+    radius = kMaxNeighborRadius;
+  }
+  neighbor_dx_.clear();
+  neighbor_dy_.clear();
+  neighbor_dx_.reserve(1 + 8 * radius);
+  neighbor_dy_.reserve(1 + 8 * radius);
+
+  neighbor_dx_.push_back(0);  // 0: center
+  neighbor_dy_.push_back(0);
+  for (int r = 1; r <= radius; r++) {
+    neighbor_dx_.insert(neighbor_dx_.end(), {0, 0, r, -r, r, r, -r, -r});
+    neighbor_dy_.insert(neighbor_dy_.end(), {r, -r, 0, 0, r, -r, r, -r});
+  }
+}
+
+// retap_core: evidence threshold N.  min_voxel_points_ == 0 keeps upstream
+// semantics (a single point makes the voxel occupied); N > 0 treats a voxel
+// with fewer points like free/unknown *inside checkNeighborCells only*, so a
+// dust return can neither block a corridor nor support a cliff edge.
+bool TerrainEvaluation::isVoxelOccupied(octomap::IgTreeNode *node) const {
+  if (!node || !octree_ptr_->isNodeOccupied(node)) return false;
+  if (min_voxel_points_ <= 0) return true;
+  return node->pointCount() >= min_voxel_points_;
 }
 
 void TerrainEvaluation::resetTerrainRepresentation(
@@ -445,59 +500,70 @@ bool TerrainEvaluation::checkNodeConstraints(octomap::IgTreeNode *node,
 // 无碰撞返回true
 bool TerrainEvaluation::checkNeighborCells(octomap::OcTreeKey key,
                                            bool debug_msg) {
-  bool flag[64];
-  memset(flag, 0, sizeof(flag));
-  static int index_x[] = {
-      0, 0, 0, 1,  -1, 1, 1,  -1, -1,  // 9: 2s
-      0, 0, 2, -2, 2,  2, -2, -2,      // 17: 3s
-      0, 0, 3, -3, 3,  3, -3, -3       // 25: 4.6s
-  };
-  static int index_y[] = {
-      0, 1,  -1, 0, 0, 1,  -1, 1,  -1,  // (0-8)9
-      2, -2, 0,  0, 2, -2, 2,  -2,      // +8, 17
-      3, -3, 0,  0, 3, -3, 3,  -3       // +8, 25
-  };
+  // retap_core: the horizontal ring and the vertical extent are parameters.
+  // With the defaults (collision_neighbor 17, clearance 3, support 3) the
+  // offsets, the visiting order and every rule below are identical to
+  // upstream, so existing calibrations keep reproducing bit for bit.
+  //
+  // Horizontal: neighbor_dx_/neighbor_dy_, 1 + 8R entries, Chebyshev radius R.
+  //   9 -> R=1 (3x3, 0.30 m at 0.20 m), 17 -> R=2 (5x5), 25 -> R=3,
+  //   49 -> R=6 (13x13, 0.325 m at 0.05 m).
+  // Vertical: z = +clearance_voxels .. -support_voxels.
+  //   z == +clearance_voxels : occupied => hard obstruction (stop)
+  //   z == 1 .. clearance-1  : occupied => must pass checkNodeConstraints
+  //   z == 0                 : the voxel itself, same constraint test
+  //   z == -2, 1 <= i <= 8   : ring 1 must be occupied (support)
+  //   z == -3, i >= 8        : ring 2+ must be occupied (cliff)
+  // The downward reach is 4 layers counted from the voxel itself
+  // (z = 0, -1, -2, -3), which is what support_voxels = 3 means.
+  const int neighbor_count = static_cast<int>(neighbor_dx_.size());
+  std::array<uint8_t, kMaxNeighborCells> flag{};
 
   bool stop = false;
   pcl::PointCloud<pcl::PointXYZI> neigh_points;
-  for (int z = 3; z >= -3; z--) {
-    for (int i = 0; i < collision_neighbor_; i++) {
+  for (int z = clearance_voxels_; z >= -support_voxels_ && !stop; z--) {
+    for (int i = 0; i < neighbor_count && !stop; i++) {
       if (flag[i]) continue;  // 该位置向下投射有了占据点则跳过
       octomap::OcTreeKey tmp = key;
-      tmp.k[0] += index_x[i];
-      tmp.k[1] += index_y[i];
+      tmp.k[0] += neighbor_dx_[i];
+      tmp.k[1] += neighbor_dy_[i];
       tmp.k[2] += z;
 
       pcl::PointXYZI pc;
-      auto p3d = octree_ptr_->keyToCoord(tmp);
-      pc.x = p3d.x();
-      pc.y = p3d.y();
-      pc.z = p3d.z();
       pc.intensity = -4;  // 正常为紫色，其他为高度渐变颜色
       octomap::IgTreeNode *node = octree_ptr_->search(tmp);
-      if (node && octree_ptr_->isNodeOccupied(node)) {
+      if (isVoxelOccupied(node)) {
         flag[i] = true;
-        if (z == 3) {  // 第3层不能有占据
+        if (z == clearance_voxels_) {  // 最高层不能有占据
           pc.intensity = z;
           stop = true;
         } else if (!checkNodeConstraints(node)) {  // 其它层的占据必须为可通行
           pc.intensity = 4;                        // 不满足约束为红色
           stop = true;
         }
-      } else {                              // free or unknown
+      } else {  // free or unknown（N > 0 时也包括点数不足 N 的体素）
         if (z == -2 && 1 <= i && i <= 8) {  // 1邻域，-2层不能有free
           pc.intensity = z;
           stop = true;
         }
         if (z == -3 && 8 <= i) {  // 2邻域，-3层不能有free
+          // retap_core: upstream wrote `i >= 8` while ring 1 ends at index 8,
+          // so one ring-1 corner is included.  Kept as-is on purpose: the
+          // default configuration must stay bit-identical to upstream.
           pc.intensity = z;
           stop = true;
         }
       }
-      neigh_points.push_back(pc);
-      if (stop) break;
+      // retap_core: upstream built this cloud unconditionally and then
+      // dropped it; it is only read on the (debug) path.
+      if (debug_msg) {
+        auto p3d = octree_ptr_->keyToCoord(tmp);
+        pc.x = p3d.x();
+        pc.y = p3d.y();
+        pc.z = p3d.z();
+        neigh_points.push_back(pc);
+      }
     }
-    if (stop) break;
   }
   if (debug_msg) {
     // retap_core: upstream published neigh_points on a ROS topic here.

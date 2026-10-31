@@ -1,0 +1,128 @@
+# ==============================================================================
+#  retap_demo — rosbag replay: online incremental terrain mapping
+# ==============================================================================
+#  Input bag (rosbag2_2026_10_28-15_57_50):
+#    /localization_pose        map <- base_link, PoseWithCovarianceStamped, 200 Hz
+#    /cloud_registered_body    base_link, PointCloud2, 10 Hz, ~3.3 k points/frame
+#    /tf, /tf_static           map -> odom -> base_link -> base_lidar
+#    (also recorded and deliberately not replayed: /Odometry, /cloud_registered,
+#     /aligned_cloud, /map, /global_map_viz)
+#
+#  This file is the SCENARIO half of the parameter set: what the robot and the
+#  data source are.  The calibration half (resolution, thresholds, weights,
+#  collision_neighbor) lives in config/<terrain>.yaml and is merged by the
+#  launch -- one copy, shared with `retap_map_tool analyze --config`.
+#
+#  Differences from retap_demo_s5.yaml (Gazebo):
+#    - map_path is empty: the terrain tree starts EMPTY and is built only from
+#      the live scans.  There is no prior to mix in (the recorded /global_map_viz
+#      is a 2-D occupancy map, not a ReTAP terrain tree).
+#    - scan_topic is /cloud_registered_body (base_link) and scan_in_map_frame is
+#      false: the plugin rotates each cloud into `map` with the localizer pose
+#      at that cloud's header.stamp.  Do NOT pre-transform with tf2 at the
+#      message stamp: in a recording the transform carrying that stamp is
+#      published after the cloud, so lookupTransform(..., stamp) fails with
+#      "extrapolation into the future" and the cloud is silently dropped.
+#    - the localizer takes /localization_pose directly (absolute pose channel,
+#      velocity by finite difference); odom_topic is off so the FAST-LIO
+#      odom/IMU path is not used at all.
+#    - origin_offset is the recorded static transform base_link -> base_lidar
+#      (0.057, 0.083, 0.310), i.e. the ray origin is the lidar, not base_link.
+#
+#  Everything else (update_free, batch policy, planner parameters) is copied
+#  from retap_demo_s5.yaml unchanged on purpose; the terrain calibration comes
+#  from config/ for both, so the two runs cannot disagree about it.
+# ==============================================================================
+
+# ── engine ─────────────────────────────────────────────────────────────────
+/retap_demo:
+  ros__parameters:
+    use_sim_time: true
+    planner_policy: periodic
+
+# ── terrain map (online incremental, no prior) ─────────────────────────────
+/retap_demo/retap_terrain_map:
+  ros__parameters:
+    use_sim_time: true
+    update_rate_hz: 10.0
+
+    retap_terrain_map:
+      # ── what this recording is (no calibration here) ─────────────────────
+      # resolution, the thresholds/weights, collision_neighbor and the NDT
+      # neighbour fields come from <share>/config/<terrain>.yaml, which the
+      # launch merges in (`config:=`, default terrain_res020_ring17.yaml).
+      # Keeping one copy there means the offline tool and the demo cannot
+      # drift apart: the same file is a complete TerrainConfig on its own.
+
+      # Empty prior: online mapping builds the tree from the replay.
+      map_format: bt
+      map_path: ""
+
+      # ── diagnostics ──────────────────────────────────────────────────────
+      publish_diagnostics: true
+      downsample_diagnostics: 1
+      diagnostics_period_sec: 1.0
+
+      # ── online incremental mapping ───────────────────────────────────────
+      online_mapping: true
+      scan_topic: /cloud_registered_body   # base_link; the plugin rotates it
+      scan_in_map_frame: false             # pose at the scan stamp, no TF lookup
+      update_free: 2
+      max_range: 7.0
+      # static TF base_link -> base_lidar recorded in the bag
+      origin_offset_x: 0.057
+      origin_offset_y: 0.083
+      origin_offset_z: 0.310
+      max_buffer_size: 2
+      max_scans_per_cycle: 4
+      terrain_update_batch: 3
+      terrain_update_period_sec: 0.5
+
+# ── planner + world view (one ControlLayer) ─────────────────────────────────
+/retap_demo/retap_layer:
+  ros__parameters:
+    use_sim_time: true
+    frequency_hz: 2.0
+
+    retap_astar_planner:
+      heuristic_weight: 0.5
+      traversability_weight: 0.5
+      distance_weight: 1.0
+      max_expansions: 500000
+      time_budget_ms: 500.0
+      goal_z_tolerance_voxels: 2
+      stop_distance: 0.2
+      snap_radius: 1.5
+      verbose: false
+      publish_path: true
+
+      replan_min_distance: 0.2
+      replan_period_sec: 2.0
+      replan_min_interval_sec: 0.5
+      replan_on_map_change: true
+
+    retap_world_view:
+      search_margin: 3.0
+      publish_markers: true
+
+# ── navigator (behaviour tree) ──────────────────────────────────────────────
+/retap_demo/finenav_navigator:
+  ros__parameters:
+    use_sim_time: true
+    behavior_trees:
+      - "finenav_retap/demo/behavior_trees"
+
+# ── localizer: the bag's global pose ───────────────────────────────────────
+# /localization_pose is an absolute map-frame pose, so it feeds the Pose
+# channel directly; velocity comes from finite differences.  Publishing TF or
+# odometry is off: the bag already carries map->odom->base_link.
+/retap_demo/finenav_localizer:
+  ros__parameters:
+    use_sim_time: true
+    pose_topic: /localization_pose
+    initial_pose_topic: ""
+    twist_topic: ""
+    odom_topic: ""
+    force_2d_mode: false
+    publish_tf: false
+    publish_odom: false

@@ -23,4 +23,8 @@ add_subdirectory(retap_world_view)
 add_subdirectory(demo)
 add_subdirectory(test)
 
+# Terrain parameter sets for `retap_rosbag.launch.py config:=<name>.yaml` and
+# for `retap_map_tool analyze --config <name>.yaml` (same file, both readers).
+install(DIRECTORY config DESTINATION share/${PROJECT_NAME})
+
 ament_auto_package(USE_SCOPED_HEADER_INSTALL_DIR)

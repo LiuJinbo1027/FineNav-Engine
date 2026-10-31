@@ -1,0 +1,37 @@
+# ==============================================================================
+#  res 0.12 + ring 17：研究分辨率的对照
+# ==============================================================================
+#  水平：ring 17 → 外沿 2.5 × 0.12 = 0.30 m ＝ 机器人半宽，几何上正好
+#  竖直：clearance_voxels = 0.60/0.12 + 1 = 6
+#        z=+1..+5 = 机体 0.60 m（只受地形约束），z=+6 = 硬阻挡层
+#        （clearance_voxels 参数化之前这里是写死的 3 层 = 0.36 m，
+#          60 cm 高的机器人会撞上 0.36–0.60 m 之间的悬空物；现在不再是问题）
+#
+#  实测（同一份点云）：
+#    资源    占据体素 28871 → 85376（2.96×），分析 266 ms → 834 ms（3.1×）
+#    点密度  中位 7 → 4 点/体素；≥20 点的体素 34.5% → 23.3%（低于
+#            points_number_threshold: 20，sparsity 估计在多数体素上失真）
+#    灰尘    单点体素 18.7% → 27.4%
+#    轨迹格  与 0.20 + ring 9 基本相同（水平半跨都是 0.30 m），
+#            说明起作用的是水平半跨，不是分辨率。
+# ==============================================================================
+retap_terrain:
+  resolution: 0.12
+
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  points_number_threshold: 20
+  collision_neighbor: 17
+  clearance_voxels: 6             # 0.60/0.12 = 5 层机体 + 1 层硬顶
+  support_voxels: 3               # 向下 z=0..-3 共 4 层
+  min_voxel_points: 0             # N：0 = 不启用
+  frame_height: 0.5
+  filling_radius: 0.5

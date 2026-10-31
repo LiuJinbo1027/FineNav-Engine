@@ -19,3 +19,10 @@ install(DIRECTORY params DESTINATION share/${PROJECT_NAME}/demo)
 install(DIRECTORY behavior_trees DESTINATION share/${PROJECT_NAME}/demo)
 install(DIRECTORY rviz DESTINATION share/${PROJECT_NAME}/demo)
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME}/demo)
+# RetapTerrainMap's shutdown line is the experiment table (config/README.md);
+# one script drives every row through the rosbag launch, one turns the bag into
+# the offline inputs (accumulated PCD + pose track), one draws the result, two
+# split the result by height (the map holds a floor and a slab).
+install(PROGRAMS scripts/retap_table.sh scripts/bag2pcd.py scripts/retap_plot.py
+        scripts/retap_bands.py scripts/retap_density.py
+        DESTINATION share/${PROJECT_NAME}/demo/scripts)

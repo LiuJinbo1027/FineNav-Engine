@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <fstream>
 #include <limits>
 
@@ -27,17 +28,39 @@ float fieldValue(octomap::IgTreeNode *node, VoxelField field) {
       return node->getSparsity();
     case VoxelField::kCollision:
       return node->getCollision() ? 1.f : 0.f;
+    case VoxelField::kDrivable:
+      // getCollision() is the "is this voxel navigable" flag; its default is
+      // 1 (collision), so an unanalysed node is never mistaken for drivable.
+      return node->getCollision() ? 0.f : 1.f;
     case VoxelField::kConnected:
       return node->getConnected() ? 1.f : 0.f;
   }
   return 0.f;
 }
 
-void updateStats(float value, float *mn, double *sum, float *mx) {
-  *mn = std::min(*mn, value);
-  *mx = std::max(*mx, value);
-  *sum += value;
-}
+// One field's min/mean/max over the finite values only.  Upstream's NDT
+// fusion can produce non-finite slope/roughness/traversability for a few
+// nodes (degenerate eigendecomposition); letting one of those into the sum
+// poisoned the mean with NaN, and the stats file then was not valid JSON.
+struct FieldStats {
+  float mn = std::numeric_limits<float>::infinity();
+  float mx = -std::numeric_limits<float>::infinity();
+  double sum = 0.0;
+  std::size_t count = 0;
+  void add(float value) {
+    if (!std::isfinite(value)) return;
+    mn = std::min(mn, value);
+    mx = std::max(mx, value);
+    sum += value;
+    ++count;
+  }
+  void write(float *out_min, float *out_mean, float *out_max) const {
+    *out_min = count > 0 ? mn : 0.f;
+    *out_max = count > 0 ? mx : 0.f;
+    *out_mean = count > 0 ? static_cast<float>(sum / static_cast<double>(count))
+                          : 0.f;
+  }
+};
 
 }  // namespace
 
@@ -180,31 +203,26 @@ bool writeVoxelCloud(const octomap::IgTree &tree, const std::string &path,
 
 TerrainStats computeStats(octomap::IgTree &tree) {
   TerrainStats s;
-  const float inf = std::numeric_limits<float>::infinity();
-  s.slope_min = s.roughness_min = s.sparsity_min = s.traversability_min = inf;
-  s.slope_max = s.roughness_max = s.sparsity_max = s.traversability_max = -inf;
-  double slope_sum = 0, rough_sum = 0, sparse_sum = 0, trav_sum = 0;
+  FieldStats slope, roughness, sparsity, traversability;
   for (auto it = tree.begin_leafs(); it != tree.end_leafs(); ++it) {
     auto *node = const_cast<octomap::IgTreeNode *>(&*it);
     if (!tree.isNodeOccupied(node)) continue;
     ++s.occupied_voxels;
     if (!node->getCollision()) ++s.drivable_voxels;
     if (node->getConnected()) ++s.connected_voxels;
-    updateStats(node->getSlope(), &s.slope_min, &slope_sum, &s.slope_max);
-    updateStats(node->getRoughness(), &s.roughness_min, &rough_sum,
-                &s.roughness_max);
-    updateStats(node->getSparsity(), &s.sparsity_min, &sparse_sum,
-                &s.sparsity_max);
-    updateStats(node->getTraversability(), &s.traversability_min, &trav_sum,
-                &s.traversability_max);
+    slope.add(node->getSlope());
+    roughness.add(node->getRoughness());
+    sparsity.add(node->getSparsity());
+    traversability.add(node->getTraversability());
   }
-  if (s.occupied_voxels > 0) {
-    const double n = static_cast<double>(s.occupied_voxels);
-    s.slope_mean = slope_sum / n;
-    s.roughness_mean = rough_sum / n;
-    s.sparsity_mean = sparse_sum / n;
-    s.traversability_mean = trav_sum / n;
-  }
+  // Means are over the finite samples, not over occupied_voxels: a node whose
+  // NDT eigendecomposition degenerated contributes no slope/roughness value at
+  // all, and counting it as zero would bias the mean downwards.
+  slope.write(&s.slope_min, &s.slope_mean, &s.slope_max);
+  roughness.write(&s.roughness_min, &s.roughness_mean, &s.roughness_max);
+  sparsity.write(&s.sparsity_min, &s.sparsity_mean, &s.sparsity_max);
+  traversability.write(&s.traversability_min, &s.traversability_mean,
+                       &s.traversability_max);
   return s;
 }
 

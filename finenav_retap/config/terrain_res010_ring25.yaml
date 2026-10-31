@@ -1,0 +1,37 @@
+# ==============================================================================
+#  res 0.10 + ring 25：分辨率阶梯的中间一级
+# ==============================================================================
+#  几何（60×60×60 cm 机器人，与 res 0.20/0.05 两套按同一规则推出）：
+#    水平：ring 25 = 1 + 8×3 → R = 3，外沿 3.5 × 0.10 = 0.35 m
+#          规则 (2R+1) × res ≥ 0.60 m → 7 × 0.10 = 0.70 m ✓
+#          与 res 0.20+ring 9（0.30 m）、res 0.05+ring 49（0.325 m）同一量级
+#    竖直：clearance_voxels = 0.60/0.10 + 1 = 7
+#          z=+1..+6 = 机体 0.60 m（只受地形约束），z=+7 = 硬阻挡层（0.70 m）
+#    向下：support_voxels = 3（z=0..-3 共 4 层，物理深度 0.30 m）
+#
+#  与另外两级一起看时要注意：纵向层数固定、物理深度随 res 变。
+#  向上 0.20/0.10/0.05 → 0.80/0.70/0.65 m；向下 0.60/0.30/0.15 m。
+#  这是"层数不随分辨率变"的直接后果，比较三档时必须一起读。
+#
+#  min_voxel_points = 0：与其它阶梯配置一致（N 的作用单独在 res 0.05 上看）。
+# ==============================================================================
+retap_terrain:
+  resolution: 0.1
+
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  points_number_threshold: 20
+  collision_neighbor: 25          # R=3 → 7×7 体素 = 0.70 m，覆盖 0.60 m 机体
+  clearance_voxels: 7             # 0.60/0.10 = 6 层机体 + 1 层硬顶
+  support_voxels: 3               # 向下 z=0..-3 共 4 层
+  min_voxel_points: 0             # N：0 = 不启用
+  frame_height: 0.5
+  filling_radius: 0.5

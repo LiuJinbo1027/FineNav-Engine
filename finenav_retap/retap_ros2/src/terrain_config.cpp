@@ -56,6 +56,9 @@ bool loadTerrainConfigFile(const std::string &path, TerrainConfigFile *out,
     readScalar(root, "traversability_weight", &cfg.traversability_weight);
     readScalar(root, "points_number_threshold", &cfg.points_number_threshold);
     readScalar(root, "collision_neighbor", &cfg.collision_neighbor);
+    readScalar(root, "clearance_voxels", &cfg.clearance_voxels);
+    readScalar(root, "support_voxels", &cfg.support_voxels);
+    readScalar(root, "min_voxel_points", &cfg.min_voxel_points);
     readScalar(root, "frame_height", &cfg.frame_height);
     readScalar(root, "filling_radius", &cfg.filling_radius);
     readScalar(root, "update_free", &cfg.update_free);
@@ -68,10 +71,32 @@ bool loadTerrainConfigFile(const std::string &path, TerrainConfigFile *out,
   }
 
   const int neighbor = static_cast<int>(cfg.collision_neighbor);
-  if (neighbor != 9 && neighbor != 17 && neighbor != 25) {
+  if (neighbor < 9 || neighbor > 121 || (neighbor - 1) % 8 != 0) {
     if (error) {
-      *error = "collision_neighbor must be 9, 17 or 25 (got " +
+      *error = "collision_neighbor must be 1 + 8*R with R in 1..15 "
+               "(9, 17, 25, 33, ... 49 ...; got " +
                std::to_string(neighbor) + ")";
+    }
+    return false;
+  }
+  if (cfg.clearance_voxels < 1 || cfg.clearance_voxels > 32) {
+    if (error) {
+      *error = "clearance_voxels must be in 1..32 (got " +
+               std::to_string(cfg.clearance_voxels) + ")";
+    }
+    return false;
+  }
+  if (cfg.support_voxels < 0 || cfg.support_voxels > 32) {
+    if (error) {
+      *error = "support_voxels must be in 0..32 (got " +
+               std::to_string(cfg.support_voxels) + ")";
+    }
+    return false;
+  }
+  if (cfg.min_voxel_points < 0) {
+    if (error) {
+      *error = "min_voxel_points must be >= 0 (got " +
+               std::to_string(cfg.min_voxel_points) + ")";
     }
     return false;
   }

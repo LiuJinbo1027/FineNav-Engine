@@ -1,0 +1,34 @@
+# ==============================================================================
+#  res 0.05 + ring 49 + 关掉稀疏度硬约束：分离"密度不足"与"密度足够但阈值错"
+# ==============================================================================
+#  sparsity_threshold = 1.01（稀疏度最大 1.0，等于不约束）。这是一组对照，
+#  不是可用配置：它让"点云密度不够"这一假设可以被单独检验。
+#
+#  被检验的命题：res 0.05 下可通行体素骤降，是因为点太少、sparsity 恒接近 1。
+#  如果关掉 sparsity 后可通行体素回升到 res 0.20 的水平（~9–11%），
+#  说明降幅来自密度统计；如果轨迹可通行率仍不动，说明走廊是被碰撞判据
+#  （灰尘/支撑）堵住的，而不是被地形属性。
+#
+#  launch 复现：
+#    ros2 launch finenav_retap retap_rosbag.launch.py config:=terrain_res005_ring49_sparsity_off.yaml
+# ==============================================================================
+retap_terrain:
+  resolution: 0.05
+
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 1.01        # 关闭稀疏度硬约束（最大值 1.0）
+  traversability_threshold: 0.805
+
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  points_number_threshold: 20
+  collision_neighbor: 49
+  clearance_voxels: 13
+  support_voxels: 3
+  min_voxel_points: 0
+  frame_height: 0.5
+  filling_radius: 0.5

@@ -1,0 +1,30 @@
+# ==============================================================================
+#  res 0.05 + ring 49 + N=5：证据阈值的第二档（用来找拐点，不是推荐值）
+# ==============================================================================
+#  与 N=3 的差别只有 min_voxel_points。用来回答"阈值是不是越大越好"：
+#  同一份点云在 res 0.05 下 5 点以上的体素只占 20.9%，N=5 会开始牺牲地面
+#  支撑（点数 3~4 的真实表面不再算支撑），因此可通行体素可能反而减少。
+#
+#  launch 复现：
+#    ros2 launch finenav_retap retap_rosbag.launch.py config:=terrain_res005_ring49_n5.yaml
+# ==============================================================================
+retap_terrain:
+  resolution: 0.05
+
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  points_number_threshold: 20
+  collision_neighbor: 49
+  clearance_voxels: 13
+  support_voxels: 3
+  min_voxel_points: 5             # N = 5
+  frame_height: 0.5
+  filling_radius: 0.5

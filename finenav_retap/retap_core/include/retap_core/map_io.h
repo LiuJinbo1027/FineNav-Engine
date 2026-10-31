@@ -21,6 +21,7 @@ enum class VoxelField {
   kRoughness,
   kSparsity,
   kCollision,
+  kDrivable,   // 1 - collision: passes checkNodeConstraints and checkNeighborCells
   kConnected,
 };
 

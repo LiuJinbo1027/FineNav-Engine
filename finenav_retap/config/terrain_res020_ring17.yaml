@@ -1,0 +1,34 @@
+# ==============================================================================
+#  baseline：ReTAP 上游默认 + S1 标定结果（当前 retap_rosbag.yaml 用的就是这一套）
+# ==============================================================================
+#  60×60 cm 机器人。
+#    水平：ring 17 → 外沿 2.5 × 0.2 = 0.50 m，比 0.30 m 半宽多 0.20 m 余量
+#    竖直：clearance_voxels 4 → z=+1..+3 是机体高度带 0.60 m（只受地形约束），
+#          z=+4 是硬阻挡层；向下 z=0..-3 共 4 层（support_voxels 3）
+#  实测（24.47 m 轨迹，90 个轨迹格）：可通行 20/90 = 22%
+#  问题：0.20 m 的水平余量把机器人自己的走廊判死 —— 两侧 0.5 m 内有任何
+#        不可通行体素（含地毯边的灰尘点）就整条走廊消失。
+# ==============================================================================
+retap_terrain:
+  resolution: 0.2
+
+  # ── 硬约束 ────────────────────────────────────────────────────────────────
+  slope_threshold: 0.65
+  roughness_threshold: 0.50
+  sparsity_threshold: 0.70
+  traversability_threshold: 0.805
+
+  # traversability = w_T · (w_s·slope + w_r·roughness + w_p·sparsity)
+  slope_weight: 0.5
+  roughness_weight: 0.3
+  sparsity_weight: 0.2
+  traversability_weight: 2.3
+
+  # ── 邻域分析 ──────────────────────────────────────────────────────────────
+  points_number_threshold: 20
+  collision_neighbor: 17          # 1+8R：9→R1(0.30 m) 17→R2(0.50 m) 25→R3(0.70 m) 49→R6
+  clearance_voxels: 4             # z=+4 有占据即碰撞；z=1..3 只查地形约束
+  support_voxels: 3               # 向下 z=0..-3 共 4 层；z=-2/-3 是支撑判据
+  min_voxel_points: 0             # N（证据阈值）：0 = 不启用，任何点都算占据
+  frame_height: 0.5               # 惰性：只有 terrainInit() 用，不在数据路径上
+  filling_radius: 0.5

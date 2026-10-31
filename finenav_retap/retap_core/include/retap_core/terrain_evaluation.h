@@ -75,6 +75,16 @@ class TerrainEvaluation {
     return kdtree_initialized_ && drivable_disjoint_root_valid_;
   }
 
+  // retap_core: geometry of the neighbour test, for logging and validation.
+  // Radius of the horizontal ring in voxels; the ring reaches (R+0.5)*res.
+  int neighborRadius() const {
+    const int ring = static_cast<int>(collision_neighbor_);
+    return ring >= 9 ? (ring - 1) / 8 : 1;
+  }
+  int clearanceVoxels() const { return clearance_voxels_; }
+  int supportVoxels() const { return support_voxels_; }
+  int minVoxelPoints() const { return min_voxel_points_; }
+
   void resetTerrainRepresentation(std::shared_ptr<octomap::IgTree> tree);
   void terrainInit(Eigen::Isometry3d &current_pose);
 
@@ -94,6 +104,16 @@ class TerrainEvaluation {
   std::shared_ptr<octomap::IgTree> octree_ptr_;
   std::string map_frame_;  // NOLINT
   float collision_neighbor_ = 17;
+  // retap_core: upstream hard-coded the vertical scan to z in [-3, +3] and the
+  // horizontal ring to the 25-entry index_x/index_y tables.  Both are
+  // parameters now; see TerrainConfig for the semantics.
+  int clearance_voxels_ = 3;
+  int support_voxels_ = 3;
+  int min_voxel_points_ = 0;
+  // Offsets of the neighbour test in voxel units: [0] = the voxel itself, then
+  // 8 per Chebyshev shell.  Rebuilt by rebuildNeighborOffsets().
+  std::vector<int> neighbor_dx_;
+  std::vector<int> neighbor_dy_;
   float frame_height_ = 0.5;
   float filling_radius_ = 0.5;
   std::shared_ptr<DisjointSet<octomap::OcTreeKey, octomap::OcTreeKey::KeyHash>>
@@ -103,6 +123,12 @@ class TerrainEvaluation {
 
   octomap::OcTreeKey drivable_disjoint_root_;
   KD_TREE<PointType>::Ptr kdtree_ptr_;
+
+  // retap_core: builds neighbor_dx_/neighbor_dy_ from collision_neighbor_.
+  void rebuildNeighborOffsets();
+  // retap_core: occupied AND has at least min_voxel_points_ points (N=0 means
+  // the point count is not consulted).  Applies to checkNeighborCells only.
+  bool isVoxelOccupied(octomap::IgTreeNode *node) const;
 
   std::mutex kdtree_mutex_;
 };
